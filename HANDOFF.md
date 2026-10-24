@@ -25,19 +25,18 @@
   - **Death Quest validator:** the user will specify it later; for now it's a stub returning `pending_agent`.
 - **Dropped at the user's request:** Telegram (UI only). Pine Labs payments are out of scope for now; `lib/pinelabs.ts` is kept, unused.
 
-## Deploy status (updated)
-- **GitHub:** pushed to `git@github.com:AngadManroy/Arrize.git`, branch `main`. Mukund-Tandon is a collaborator, and SSH push works.
-- **Replit project:** `https://replit.com/@mukundtandon12/Arrize`, imported from GitHub under account mukundtandon12.
-  - On import, Replit auto-started its own agent ("Port imported Vercel app to Replit") to convert the repo into a pnpm workspace with a `mockup-sandbox` template. That made the app crash (`ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL … vite dev`).
-  - We stopped that agent and sent Replit's agent exact instructions: restore the original standalone Next.js layout, don't touch app source or secrets, use Node 22 (`npm install` + `npm run dev` on port 3000 for the preview), deploy with build `npm ci && npm run build` and run `npm run start` on Autoscale, provision Replit Postgres (sets `DATABASE_URL`), then check `/api/health`.
-  - Last seen progress: original layout restored, Node 22 set, `npm install` done; running the production build and starting the preview.
-- **Still to do on Replit:**
-  1. Confirm the agent finished and the preview shows the Arrize sign-in page.
-  2. **The user must add the Secrets themselves** (an agent must not type keys or passwords into Replit): `SESSION_SECRET`, `ADMIN_PASSWORD`, `CRON_SECRET`, `OPENROUTER_API_KEY`, `LLM_PROVIDER=openrouter`, `LLM_MODEL=anthropic/claude-haiku-5.5`, `LLM_FALLBACK_MODELS=openai/gpt-4o-mini,google/gemini-2.5-flash-lite`, `AGENT_PROVIDER=local`, `APP_URL=<published URL>`. Copy the values from the local `.env.local`.
-  3. Click **Publish** (Autoscale), open `/admin` and click **Reset demo hunter**.
-  4. Run the smoke test against the live URL: `BASE=<url> ADMIN_PASSWORD=… CRON_SECRET=… npx tsx scripts/smoke.ts`.
-  5. Optional: add a Scheduled Deployment for the 06:00 IST cron (command in the README).
-- If Replit's agent edited files, check the Replit git diff; app source should be unchanged. Local `main` (this machine) is the source of truth.
+## Deploy status: LIVE
+- **Live URL:** https://arrize.replit.app (Replit Autoscale, Replit Postgres, `anthropic/claude-haiku-5.5`). Published 2026-10-24.
+- **Code:** GitHub `git@github.com:AngadManroy/Arrize.git` `main`. Replit project `replit.com/@mukundtandon12/Arrize` was imported from it.
+  - Replit auto-started its agent, which tried to convert the repo to a pnpm workspace and crashed the app. It was told to restore the original layout, and did.
+  - To redeploy: push to GitHub, pull in Replit's Git pane, then Publish again.
+- **Secrets on Replit** (added by the user): `SESSION_SECRET`, `ADMIN_PASSWORD`, `CRON_SECRET`, `OPENROUTER_API_KEY`, `LLM_*`, `AGENT_PROVIDER=local`. `DATABASE_URL` is Replit-managed.
+  - TODO: add `APP_URL=https://arrize.replit.app`.
+- **Verified on production:** `BASE=https://arrize.replit.app npx tsx scripts/smoke.ts` passes all 24 steps. It leaves a "Smoke Tester" user and the demo hunter in the database. The cron endpoint works with the Bearer secret.
+- **Still open:**
+  - A Replit Scheduled Deployment for the 06:00 IST cron (command in the README); the planner also runs on demand when a user opens the board.
+  - The AgenticOrg key returns 401.
+  - The Death Quest validator spec (from the user).
 
 ## Environment (`.env.local`, gitignored; never commit secrets)
 - **LLM:** OpenRouter with paid credits.

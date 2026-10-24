@@ -4,18 +4,23 @@ import "./env";
 
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const ADMIN = process.env.ADMIN_PASSWORD ?? "";
-let cookie = "";
+const jar = new Map<string, string>();
+const cookieHeader = () => [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
 let failures = 0;
 
 async function call(method: string, path: string, body?: unknown, admin = false): Promise<any> {
   const res = await fetch(BASE + path, {
     method,
-    headers: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}), ...(admin ? { "x-admin-key": ADMIN } : {}) },
+    headers: { "Content-Type": "application/json", ...(jar.size ? { cookie: cookieHeader() } : {}), ...(admin ? { "x-admin-key": ADMIN } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
     redirect: "manual",
   });
-  const set = res.headers.get("set-cookie");
-  if (set) cookie = set.split(";")[0];
+  // Hosting proxies add their own cookies; keep every cookie by name instead of replacing the session.
+  for (const c of res.headers.getSetCookie?.() ?? []) {
+    const [pair] = c.split(";");
+    const i = pair.indexOf("=");
+    if (i > 0) jar.set(pair.slice(0, i).trim(), pair.slice(i + 1));
+  }
   const text = await res.text();
   let data: any = text;
   try { data = JSON.parse(text); } catch { /* streamed text */ }
@@ -117,7 +122,7 @@ async function main() {
   await step("admin overview", async () => { const r = await call("GET", "/api/admin/overview", undefined, true); return `users=${r.totals.users} runs=${r.totals.agent_runs} fallbacks=${r.totals.fallbacks} events=${r.totals.events}`; });
   await step("export events CSV", async () => { const r: string = await call("GET", "/api/admin/export?what=events&format=csv", undefined, true); return `${r.split("\n").length - 1} rows`; });
   await step("demo hunter sign-in", async () => {
-    cookie = "";
+    jar.clear();
     await call("POST", "/api/auth/signin", { demo: true });
     const s = await call("GET", "/api/stats");
     return `level ${s.stats.level} ${s.stats.rank}-rank, streak ${s.stats.streak.current} (best ${s.stats.streak.best}), heat days=${s.heat.length}`;
