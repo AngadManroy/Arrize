@@ -43,7 +43,12 @@
 - **Planner:** a scattered diagnosis gives 2–3 quests; brand-new learners get a 3-day grace period before they can be judged scattered.
 - **Teammate patch** (applied by hand, because the paste lost indentation and CSS property names):
   - **AgenticOrg:** the key works. The hackathon host's CloudFront drops `Authorization` on GET, so `checkKey()` uses POST. There's now a 3rd agent, `death_quest_options`. Shadow agents' flagged runs are used and recorded as `hitl_triggered` (`AGENTICORG_ACCEPT_HITL=false` falls back instead).
-    - Next step: `npm run agents:create` (needs the user's OK), put the IDs in Replit Secrets, set `AGENT_PROVIDER=agenticorg`.
+    - **Agents created 2026-10-24** (shadow mode, key's scope, names end in " v2" because the v1 names already existed in that scope):
+      - Goal Intake `7228e54b-28f9-43ca-b486-1c3b0c4e4450`
+      - Quest Planner `d1b28ea1-f256-4427-a32d-21baa6d5db1b`
+      - Death Quest Options `d2e7cada-3cdf-4e1f-98df-ed854dd46c6e`
+    - Sample runs take ~3 s and come back `hitl_triggered` (shadow) with valid output. Locally all 3 personas and the backend e2e run on `agenticorg` with no fallback.
+    - The API key belongs to a different scope than the Mukund dashboard login (AirTribe tenant), so these agents show up in the key owner's dashboard, not Mukund's. `POST /sop/deploy` gets a CloudFront 403, so the script falls back to `POST /agents`.
   - **Arrize Pro:** ₹199/month via UPI QR (`lib/subscription.ts`, `uqr`). The user enters their UTR; an admin approves on `/admin`, which activates 30 days. Needs `UPI_VPA`. There's no gateway, so nothing is auto-verified.
   - **Voice coach:** ElevenLabs STT/TTS if a key is set; otherwise the browser's own speech (`components/useVoice.ts`).
   - **Profile page** `/profile` (plan, UPI checkout, log out), plus a log-out button in the status header.

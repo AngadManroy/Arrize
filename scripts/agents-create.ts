@@ -17,8 +17,11 @@ const SAMPLES: Record<string, unknown> = {
   death_quest_options: { goal: "Learn React", deadline: "2027-01-31", daily_minutes: 45, tracks: ["Core concepts", "Hands-on building"], current_level: "beginner" },
 };
 
+// AGENT_NAME_SUFFIX=" v2" creates a second set when names are taken in the key's scope (AgenticOrg answers 409).
+const SUFFIX = process.env.AGENT_NAME_SUFFIX ?? "";
+
 async function create(a: (typeof AGENTS)[number]): Promise<string> {
-  const settings = { name: a.name, agent_type: a.agent_type, domain: "ops", confidence_floor: a.confidence_floor, hitl_condition: a.hitl_condition, authorized_tools: [], initial_status: "shadow" };
+  const settings = { name: `${a.name}${SUFFIX}`, agent_type: a.agent_type, domain: "ops", confidence_floor: a.confidence_floor, hitl_condition: a.hitl_condition, authorized_tools: [], initial_status: "shadow" };
   try {
     const parsed: any = await parseSop(a.sop, "ops");
     const config = { ...(parsed.config ?? parsed.draft ?? parsed), ...settings, system_prompt_text: a.prompt };
@@ -36,7 +39,7 @@ async function create(a: (typeof AGENTS)[number]): Promise<string> {
 async function main() {
   for (const a of AGENTS) {
     if (process.env[a.env]) { console.log(`${a.env} already set (${process.env[a.env]}), skipping`); continue; }
-    console.log(`Creating ${a.name}…`);
+    console.log(`Creating ${a.name}${SUFFIX}…`);
     const id = await create(a);
     console.log(`  ${a.env}=${id}`);
     const sample = SAMPLES[a.agent_type];
