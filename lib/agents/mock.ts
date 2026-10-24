@@ -148,7 +148,8 @@ export function mockPlan(input: PlannerInputT): DailyPlanT {
   const paused = active.length - keep.length;
   const pct = Math.round(input.computed.avg_clear_rate_7 * 100);
   const variant = diagnosis === "coasting" ? "coasting" : diagnosis === "stalled" ? "stalled" : "normal";
-  const quests = questsForTracks(input.goal.title, (keep.length ? keep : active).map((t) => t.name), input.goal.daily_minutes, variant, input.last_7_days.length);
+  const all = questsForTracks(input.goal.title, (keep.length ? keep : active).map((t) => t.name), input.goal.daily_minutes, variant, input.last_7_days.length);
+  const quests = diagnosis === "scattered" ? all.slice(0, 3) : all;
   const reasons: Record<DiagnosisT, string[]> = {
     scattered: [`Logged ${input.computed.days_logged_7} of the last 7 days with a ${pct}% average clear rate across ${active.length} tracks.`, `Focusing on ${keep.map((k) => k.name).join(" and ")} for now.`],
     coasting: [`Clear rate above 90% for 7 days (${pct}% average).`, "Counter targets raised about 20%."],
@@ -156,7 +157,7 @@ export function mockPlan(input: PlannerInputT): DailyPlanT {
     on_track: [`${input.computed.days_logged_7}/7 days logged, ${pct}% average clear rate.`, "Keeping the plan steady."],
   };
   const messages: Record<DiagnosisT, string> = {
-    scattered: `You've been spread across ${active.length} tracks and only ${input.computed.days_logged_7} days stuck this week, so ${paused > 0 ? `I paused ${paused} and ` : ""}today is just ${keep.map((k) => k.name).join(" and ")}. Small and finished beats big and skipped.`,
+    scattered: `You've been spread across ${active.length} tracks and ${input.computed.days_logged_7 < 3 ? `only ${input.computed.days_logged_7} days stuck this week` : `cleared just ${pct}% this week`}, so ${paused > 0 ? `I paused ${paused} and ` : ""}today is just 3 quests on ${keep.map((k) => k.name).join(" and ")}. Small and finished beats big and skipped.`,
     coasting: `You cleared ${pct}% of your quests this week, so I raised your targets by about 20%. You're ready for more.`,
     stalled: "You've been repeating the same quests for a while, so today mixes things up with a teach-back and a mini project. New angles make ideas stick.",
     on_track: `Solid week: ${input.computed.days_logged_7} of 7 days logged at ${pct}% average. Same rhythm today, keep the streak alive.`,

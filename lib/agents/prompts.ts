@@ -49,6 +49,7 @@ export const QUEST_PLANNER_SYSTEM = `${QUEST_PLANNER_SOP}
 
 ${QUEST_RULES}
 The input includes "computed" (Step 1 already done in code: days_logged_7, avg_clear_rate_7, active_tracks, suggested_diagnosis). Use those numbers; you may override the suggested diagnosis only with a clear reason.
+If the diagnosis is scattered, write only 2 or 3 quests (the most important ones, on the tracks you keep) instead of 4 to 6.
 "custom_quests" are the learner's own recurring quests; they are already on the board, so never repeat or rephrase them.
 Only write quests for tracks you keep. Use exact track names from the input. track_changes uses the numeric track ids from the input.
 message_to_user: exactly two sentences, warm and direct, never shaming, mention the change.

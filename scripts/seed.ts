@@ -1,8 +1,8 @@
-// npm run seed — (re)create the demo hunter with 13 weeks of history.
+// npm run seed — (re)create every demo persona: Riya (coasting), Kabir (procrastinator), Meera (stalled).
 import "./env";
-import { ensureDemoUser } from "../lib/seed";
+import { seedAllPersonas } from "../lib/seed";
 
-ensureDemoUser({ reset: true }).then((id) => {
-  console.log(`Demo hunter ready (user ${id}). Sign in with "Try the demo" on the home page.`);
+seedAllPersonas({ reset: true }).then((ids) => {
+  console.log("Personas ready (sign in with these emails on the home page):", ids);
   process.exit(0);
 });

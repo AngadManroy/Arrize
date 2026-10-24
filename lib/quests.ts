@@ -12,9 +12,9 @@ export interface TrackRef { id: number; name: string; priority: number; status: 
 
 /**
  * Guardrails applied to every agent's quest list, whatever the model said:
- * known tracks only, 4–6 quests, unique titles, sane targets/EXP, at least one verifiable quest.
+ * known tracks only, 4–6 quests (2–3 when refocusing a scattered learner), unique titles, sane targets/EXP, at least one verifiable quest.
  */
-export function normalizeQuests(raw: AgentQuestT[], tracks: TrackRef[], goal: string, dailyMinutes: number, exclude: string[] = []): (AgentQuestT & { track_id: number | null })[] {
+export function normalizeQuests(raw: AgentQuestT[], tracks: TrackRef[], goal: string, dailyMinutes: number, exclude: string[] = [], range = { min: 4, max: 6 }): (AgentQuestT & { track_id: number | null })[] {
   const active = tracks.filter((t) => t.status === "active").sort((a, b) => a.priority - b.priority);
   const pool = active.length ? active : tracks;
   const byName = new Map(pool.map((t) => [t.name.toLowerCase(), t]));
@@ -26,7 +26,7 @@ export function normalizeQuests(raw: AgentQuestT[], tracks: TrackRef[], goal: st
   const out: (AgentQuestT & { track_id: number | null })[] = [];
   const push = (x: AgentQuestT) => {
     const key = x.title.toLowerCase().trim();
-    if (seen.has(key) || exclude.some((e) => overlaps(e, x.title)) || out.length >= 6) return;
+    if (seen.has(key) || exclude.some((e) => overlaps(e, x.title)) || out.length >= range.max) return;
     const track = (x.track && byName.get(x.track.toLowerCase())) || (x.track ? pool.find((t) => x.track!.toLowerCase().includes(t.name.toLowerCase()) || t.name.toLowerCase().includes(x.track!.toLowerCase())) : undefined) || pool[0];
     seen.add(key);
     out.push({
@@ -40,7 +40,7 @@ export function normalizeQuests(raw: AgentQuestT[], tracks: TrackRef[], goal: st
     });
   };
   raw.forEach(push);
-  if (out.length < 4) questsForTracks(goal, pool.map((t) => t.name), dailyMinutes).forEach(push);
+  if (out.length < range.min) questsForTracks(goal, pool.map((t) => t.name), dailyMinutes).forEach(push);
   if (!out.some((x) => x.verifiable)) {
     const learning = out.find((x) => x.type !== "count") ?? out[0];
     if (learning) learning.verifiable = true;

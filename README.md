@@ -34,6 +34,20 @@ npm run dev                  # http://localhost:3000
 No `DATABASE_URL` → embedded PGlite in `./.data`. No LLM key → mock coach and mock agents (recorded as `mock`).
 Click **Try the demo hunter** on the home page for a user with 13 weeks of history.
 
+### Personas (simulate different learners)
+
+`npm run seed` (or `/admin` → **Reset demo hunter**) seeds three users. Sign in with their email on the home page (no
+password); opening the board runs today's planner for them.
+
+| Email | Who | What the planner does today |
+| --- | --- | --- |
+| `demo@arrize.app` | Riya, 13 weeks, now near-perfect | **coasting** → raises targets ~20% |
+| `procrastinator@arrize.app` | Kabir, 3 good weeks then 2 of the last 7 days logged | **scattered** → pauses 1 track, board shrinks to 2–3 quests |
+| `stalled@arrize.app` | Meera, same quests daily at a flat ~60% | **stalled** → swaps in new quest types |
+
+`PGLITE_DIR=memory:// npx tsx scripts/personas-check.ts` asserts all three. New users get a 3-day grace period before
+they can be diagnosed scattered.
+
 ## Agents
 
 One interface (`lib/agents/index.ts`), two implementations, chosen by `AGENT_PROVIDER`:

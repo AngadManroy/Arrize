@@ -83,7 +83,8 @@ export async function buildPlannerInput(user: UserRow, day: string): Promise<Pla
   const older = days.filter((d) => d.day < from7 && d.quests > 0);
   const olderAvg = older.length ? older.reduce((s, d) => s + d.clearRate, 0) / older.length : 0;
   let suggested: DiagnosisT = "on_track";
-  if ((daysLogged7 < Math.min(3, daysAvailable) || (last7.length > 0 && avg < 0.4)) && activeTracks > 2) suggested = "scattered";
+  // New learners get a 3-day grace period before they can be judged scattered.
+  if (daysAvailable >= 3 && (daysLogged7 < 3 || (last7.length > 0 && avg < 0.4)) && activeTracks > 2) suggested = "scattered";
   else if (last7.length >= 7 && last7.every((d) => d.clear_rate > 0.9)) suggested = "coasting";
   else if (repeated >= 3 && older.length >= 5 && avg <= olderAvg + 0.02) suggested = "stalled";
   const lastActive = await one<{ d: string | null }>(`SELECT to_char(MAX(day_key),'YYYY-MM-DD') AS d FROM quest_events WHERE user_id = $1 AND day_key < $2`, [user.id, day]);
@@ -154,7 +155,9 @@ export async function runPlanner(user: UserRow, day: string, opts: { force?: boo
     // Replanning a day: retire that day's earlier planner quests (their events stay in history).
     await q(`UPDATE quests SET status = 'deleted', end_day = start_day WHERE user_id = $1 AND start_day = $2 AND source IN ('planner','onboarding') AND end_day > start_day`, [user.id, day]);
     const customs = await q<{ name: string }>(`SELECT name FROM quests WHERE user_id = $1 AND source = 'custom' AND status = 'active'`, [user.id]);
-    const quests = normalizeQuests(plan.quests_for_tomorrow, after, goal.title, Number(goal.daily_minutes), customs.map((c) => c.name));
+    const quests = normalizeQuests(plan.quests_for_tomorrow, after, goal.title, Number(goal.daily_minutes), customs.map((c) => c.name),
+      // A scattered learner gets a smaller, focused board: 2-3 quests on the tracks we keep.
+      plan.diagnosis === "scattered" ? { min: 2, max: 3 } : { min: 4, max: 6 });
     await insertDailyQuests(user.id, day, quests, "planner");
     const escalate = pauses.length >= 2;
     await q(`UPDATE daily_plans SET status = 'done', diagnosis = $3, reasons = $4, message = $5, agent_run_id = $6 WHERE user_id = $1 AND day_key = $2`, [
