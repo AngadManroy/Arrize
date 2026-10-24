@@ -153,6 +153,7 @@ function Current({ dq, reload }: { dq: DQ; reload: () => void }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [checking, setChecking] = useState(false);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const left = new Date(dq.deadline).getTime() - now;
   const st = STATUS[dq.status] ?? { label: dq.status, color: "var(--ink)" };
@@ -167,13 +168,13 @@ function Current({ dq, reload }: { dq: DQ; reload: () => void }) {
   }
 
   async function submit() {
-    setBusy(true); setErr("");
+    setBusy(true); setErr(""); setChecking(true);
     try {
       const body = dq.proof_type === "quiz" ? { answers } : dq.proof_type === "entry" ? { text } : { url, note };
-      await api(`/api/death-quests/${dq.id}/submit`, { body });
-      shell.toast("PROOF SUBMITTED");
+      const { verdict } = await api<{ verdict: { status: string } }>(`/api/death-quests/${dq.id}/submit`, { body });
+      shell.toast(verdict.status === "passed" ? "DEATH QUEST CLEARED" : verdict.status === "failed" ? "DEATH QUEST FAILED" : "PROOF SENT FOR REVIEW", verdict.status === "failed");
       reload();
-    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+    } catch (e: any) { setErr(e.message); } finally { setBusy(false); setChecking(false); }
   }
 
   return (
@@ -224,6 +225,7 @@ function Current({ dq, reload }: { dq: DQ; reload: () => void }) {
               <button className="btn danger" onClick={submit} disabled={busy || !/^https?:\/\/\S+\.\S+/.test(url)}>Submit link</button>
             </div>
           )}
+          {checking && <div className="loading-line"><span className="spinner" />VALIDATOR IS CHECKING YOUR PROOF…</div>}
           {err && <p className="err">{err}</p>}
         </div>
       )}

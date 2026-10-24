@@ -62,7 +62,7 @@ async function main() {
   ok(refused, "only one Death Quest per week");
   const qs = await startQuiz(user, dq);
   const v = await submitProof(user, dq, { answers: qs.map(() => "My honest answer with some detail") });
-  ok(v.status === "pending_agent", "submission → validator stub → pending_agent");
+  ok(v.status === "failed" || v.status === "awaiting_human", `vague quiz answers are not passed → ${v.status}: ${v.reasons[0]?.slice(0, 90)}`);
   ok((await currentDeathQuest(user.id))?.submission?.quiz?.answers?.length === 3, "answers stored, expected answers hidden");
   const coach = await read(await coachTurn(user, "I only have 10 minutes today"));
   ok(coach.length > 20, `coach replied: ${coach.replace(/\s+/g, " ").slice(0, 100)}`);

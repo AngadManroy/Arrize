@@ -51,7 +51,7 @@ export async function checkKey(): Promise<{ ok: boolean; detail: string }> {
   }
 }
 
-export const AGENT_ID_VARS = ["AGENTICORG_AGENT_GOAL_INTAKE", "AGENTICORG_AGENT_QUEST_PLANNER", "AGENTICORG_AGENT_DEATH_QUEST_OPTIONS"];
+export const AGENT_ID_VARS = ["AGENTICORG_AGENT_GOAL_INTAKE", "AGENTICORG_AGENT_QUEST_PLANNER", "AGENTICORG_AGENT_DEATH_QUEST_OPTIONS", "AGENTICORG_AGENT_DEATH_QUEST"];
 
 export const listAgents = (domain?: string) => aoRequest("GET", `/agents${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`);
 export const getAgent = (id: string) => aoRequest("GET", `/agents/${id}`);

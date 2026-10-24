@@ -3,17 +3,27 @@
 // Promote them to active in the AgenticOrg dashboard. Never writes secrets to files.
 import "./env";
 import { createAgent, deploySop, parseSop, runAgent } from "../lib/agenticorg";
-import { DEATH_QUEST_OPTIONS_SYSTEM, GOAL_INTAKE_SOP, GOAL_INTAKE_SYSTEM, QUEST_PLANNER_SOP, QUEST_PLANNER_SYSTEM } from "../lib/agents/prompts";
+import { DEATH_QUEST_OPTIONS_SYSTEM, DEATH_QUEST_VALIDATOR_SOP, DEATH_QUEST_VALIDATOR_SYSTEM, GOAL_INTAKE_SOP, GOAL_INTAKE_SYSTEM, QUEST_PLANNER_SOP, QUEST_PLANNER_SYSTEM } from "../lib/agents/prompts";
 
 const AGENTS = [
   { env: "AGENTICORG_AGENT_GOAL_INTAKE", name: "Arrize Goal Intake", agent_type: "goal_intake", sop: GOAL_INTAKE_SOP, prompt: GOAL_INTAKE_SYSTEM, confidence_floor: 0.7, hitl_condition: "needs_followup == true" },
   { env: "AGENTICORG_AGENT_QUEST_PLANNER", name: "Arrize Quest Planner", agent_type: "quest_planner", sop: QUEST_PLANNER_SOP, prompt: QUEST_PLANNER_SYSTEM, confidence_floor: 0.75, hitl_condition: "paused_tracks >= 2 OR goal_changed == true" },
   { env: "AGENTICORG_AGENT_DEATH_QUEST_OPTIONS", name: "Arrize Death Quest Options", agent_type: "death_quest_options", sop: DEATH_QUEST_OPTIONS_SYSTEM, prompt: DEATH_QUEST_OPTIONS_SYSTEM, confidence_floor: 0.7, hitl_condition: "" },
+  { env: "AGENTICORG_AGENT_DEATH_QUEST", name: "Arrize Death Quest Validator", agent_type: "death_quest_validator", sop: DEATH_QUEST_VALIDATOR_SOP, prompt: DEATH_QUEST_VALIDATOR_SYSTEM, confidence_floor: 0.6, hitl_condition: "status == awaiting_human" },
 ];
 
 const SAMPLES: Record<string, unknown> = {
   goal_intake: { transcript: [{ role: "coach", text: "What do you want to learn?" }, { role: "learner", text: "Learn React to build my own apps" }, { role: "coach", text: "By when, and how many minutes a day?" }, { role: "learner", text: "In 2 months, 45 minutes a day" }], today: new Date().toISOString().slice(0, 10) },
   quest_planner: { goal: { title: "Learn React", deadline: "2027-01-31", daily_minutes: 45 }, tracks: [{ id: 1, name: "Core concepts", priority: 1, status: "active" }, { id: 2, name: "Hands-on building", priority: 2, status: "active" }, { id: 3, name: "Problem solving", priority: 3, status: "active" }], last_7_days: [], days_since_last_login: 3, computed: { days_logged_7: 1, avg_clear_rate_7: 0.3, active_tracks: 3, suggested_diagnosis: "scattered", repeated_titles_14: 0 } },
+  death_quest_validator: {
+    quest: { title: "Pass a 3-question quiz on React state", description: "Answer 3 fresh questions on useState and props in your own words.", proof_type: "quiz", deadline: "2027-01-31T00:00:00Z" },
+    submission: { quiz: { questions: [
+      { question: "What does useState return?", expected_answer: "An array with the current state value and a setter function." },
+      { question: "Why should you not mutate state directly?", expected_answer: "React would not know to re-render; use the setter with a new value." },
+      { question: "What are props?", expected_answer: "Read-only inputs a parent passes to a child component." },
+    ], answers: ["A pair: the value and a function to update it", "Because React won't re-render if you change it in place", "Data passed from parent to child, read-only"] } },
+    evidence: {}, pledge: null, user_disputed: false,
+  },
   death_quest_options: { goal: "Learn React", deadline: "2027-01-31", daily_minutes: 45, tracks: ["Core concepts", "Hands-on building"], current_level: "beginner" },
 };
 

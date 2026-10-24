@@ -8,7 +8,7 @@ import { logEvent, one } from "../db";
 import { runAgent, agenticOrgConfigured } from "../agenticorg";
 import { extractJson, generateJson, llmEnabled, type ChatMsg } from "../llm";
 import { mockDeathQuestOptions, mockGoalIntake, mockPlan } from "./mock";
-import { DEATH_QUEST_OPTIONS_SYSTEM, GOAL_INTAKE_SYSTEM, QUEST_PLANNER_SYSTEM } from "./prompts";
+import { DEATH_QUEST_OPTIONS_SYSTEM, DEATH_QUEST_VALIDATOR_SYSTEM, GOAL_INTAKE_SYSTEM, QUEST_PLANNER_SYSTEM } from "./prompts";
 import {
   DailyPlan, DeathQuestOptions, DeathQuestVerdict, GoalProfile,
   type AgentResult, type DailyPlanT, type DeathQuestInputT, type DeathQuestOptionsInputT, type DeathQuestOptionsT, type DeathQuestVerdictT,
@@ -140,12 +140,11 @@ export class LocalLLMProvider implements AgentProvider {
     return execute("death_quest_options", input, ctx, [llmAttempt(DeathQuestOptions, DEATH_QUEST_OPTIONS_SYSTEM, input), mockAttempt(() => mockDeathQuestOptions(input.goal, input.tracks))]);
   }
   validateDeathQuest(input: DeathQuestInputT, ctx: AgentCtx) {
-    return execute("death_quest_validator", input, ctx, [stubValidator()]);
+    return execute("death_quest_validator", input, ctx, [llmAttempt(DeathQuestVerdict, DEATH_QUEST_VALIDATOR_SYSTEM, input), humanReview()]);
   }
 }
 
 export class AgenticOrgProvider implements AgentProvider {
-  private local = new LocalLLMProvider();
   goalIntake(input: GoalIntakeInputT, ctx: AgentCtx) {
     const payload = { ...input, today: ctx.today };
     return execute("goal_intake", payload, ctx, [
@@ -169,19 +168,20 @@ export class AgenticOrgProvider implements AgentProvider {
     ]);
   }
   validateDeathQuest(input: DeathQuestInputT, ctx: AgentCtx) {
-    return this.local.validateDeathQuest(input, ctx);
+    return execute("death_quest_validator", input, ctx, [
+      agenticOrgAttempt("death_quest_validator", DeathQuestVerdict, input, ["status", "reasons"]),
+      llmAttempt(DeathQuestVerdict, DEATH_QUEST_VALIDATOR_SYSTEM, input),
+      humanReview(),
+    ]);
   }
 }
 
-/** The Death Quest validator is specified later. Until then every submission waits for it. */
-function stubValidator(): Attempt<DeathQuestVerdictT> {
-  return {
-    provider: "stub",
-    run: async () => ({
-      output: DeathQuestVerdict.parse({ status: "pending_agent", confidence: null, reasons: ["The Death Quest validation agent is not connected yet. Your proof is stored and will be judged when it is."] }),
-      model: null, confidence: null, externalRunId: null, status: "completed",
-    }),
-  };
+/** Last resort when no agent could judge the proof: never guess a verdict, hand it to a person. */
+function humanReview(): Attempt<DeathQuestVerdictT> {
+  return mockAttempt(() => DeathQuestVerdict.parse({
+    status: "awaiting_human", confidence: null,
+    reasons: ["Your proof is saved. The validator couldn't be reached just now, so a reviewer will check it by hand."],
+  }));
 }
 
 export function agentProviderName(): "local" | "agenticorg" {
