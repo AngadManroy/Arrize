@@ -1,49 +1,36 @@
-// Hunter state assembled from the database + the pure game rules.
-import { one, q } from "./db";
+// Hunter state assembled from the database + the pure game rules. Nothing derived is stored:
+// EXP, levels, streaks and clear rates are folded from quest_events on every read.
+import { q } from "./db";
+import { dayInfo } from "./clock";
 import {
-  addDays, capacityShare, dayKey, foldEvents, inWarningWindow, levelFromExp, msUntilReset,
-  questComplete, questExp, questFraction, rankForLevel, scoreDay, streaks,
+  addDays, foldEvents, levelFromExp, questActiveOn, questCredit, questExp, rankForLevel, scoreDay, streaks, wordCount,
   type DayResult, type QuestDef, type QuestEventRow,
 } from "./game";
-
-export interface UserRow {
-  id: number;
-  slug: string;
-  hunter_name: string;
-  daily_minutes: number;
-  clear_threshold: number;
-  stake_appetite_paise: number;
-  created_day: string;
-}
+import type { UserRow } from "./session";
 
 export interface QuestRow extends QuestDef {
   name: string;
   unit: string;
   step: number;
-  est_minutes: number;
   track_id: number | null;
+  track_name: string | null;
+  source: "planner" | "custom" | "onboarding";
+  status: "active" | "paused" | "deleted";
+  verifiable: boolean;
   sort: number;
-  source: string;
 }
 
-export async function getHunter(slug: string | null | undefined): Promise<UserRow | null> {
-  if (!slug) return null;
-  return one<UserRow>(
-    `SELECT id, slug, hunter_name, daily_minutes, clear_threshold, stake_appetite_paise,
-            to_char((created_at AT TIME ZONE 'Asia/Kolkata') - interval '6 hours', 'YYYY-MM-DD') AS created_day
-     FROM users WHERE slug = $1`,
-    [slug.toLowerCase()],
-  );
-}
-
-export async function loadQuests(userId: number): Promise<QuestRow[]> {
+export async function loadQuests(userId: number, onDay?: string): Promise<QuestRow[]> {
   const rows = await q<any>(
-    `SELECT id, track_id, section, name, type, target, unit, step, attribute, exp, est_minutes, sort, source,
-            to_char(start_day, 'YYYY-MM-DD') AS start_day, to_char(end_day, 'YYYY-MM-DD') AS end_day
-     FROM quests WHERE user_id = $1 ORDER BY sort, id`,
-    [userId],
+    `SELECT qu.id, qu.track_id, t.name AS track_name, qu.source, qu.name, qu.type, qu.target, qu.unit, qu.step, qu.attribute, qu.exp,
+            qu.verifiable, qu.status, qu.sort,
+            to_char(qu.start_day, 'YYYY-MM-DD') AS start_day, to_char(qu.end_day, 'YYYY-MM-DD') AS end_day
+     FROM quests qu LEFT JOIN tracks t ON t.id = qu.track_id
+     WHERE qu.user_id = $1 ${onDay ? "AND qu.start_day <= $2 AND (qu.end_day IS NULL OR qu.end_day > $2)" : ""}
+     ORDER BY qu.sort, qu.id`,
+    onDay ? [userId, onDay] : [userId],
   );
-  return rows.map((r) => ({ ...r, target: Number(r.target), step: Number(r.step), exp: Number(r.exp), est_minutes: Number(r.est_minutes) }));
+  return rows.map((r) => ({ ...r, target: Number(r.target), step: Number(r.step), exp: Number(r.exp) }));
 }
 
 export async function loadEvents(userId: number, fromDay?: string): Promise<QuestEventRow[]> {
@@ -55,6 +42,11 @@ export async function loadEvents(userId: number, fromDay?: string): Promise<Ques
   return rows.map((r) => ({ ...r, value: r.value === null ? null : Number(r.value) }));
 }
 
+export async function loadBreaks(userId: number): Promise<string[]> {
+  const rows = await q<{ d: string }>(`SELECT to_char(day_key, 'YYYY-MM-DD') AS d FROM streak_breaks WHERE user_id = $1`, [userId]);
+  return rows.map((r) => r.d);
+}
+
 export interface HunterStats {
   totalExp: number;
   level: number;
@@ -64,67 +56,86 @@ export interface HunterStats {
   streak: { current: number; best: number };
   attributes: Record<string, number>;
   clearRate7: number;
-  clearRate30: number;
+  daysLogged7: number;
   daysLogged: number;
-  fullClears: number;
-  capacityMinutes: number;
+  daysCleared: number;
+  questsCompleted: number;
+  today: DayResult;
   days: DayResult[];
 }
 
-export async function computeStats(user: UserRow, now = new Date()): Promise<HunterStats> {
-  const today = dayKey(now);
-  const quests = await loadQuests(user.id);
-  const events = await loadEvents(user.id);
+/** Score every day from `from` to `to` (inclusive). */
+export function scoreRange(quests: QuestDef[], events: QuestEventRow[], from: string, to: string, threshold: number): DayResult[] {
   const states = foldEvents(events);
+  const out: DayResult[] = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) out.push(scoreDay(quests, states, d, threshold));
+  return out;
+}
+
+export async function computeStats(user: UserRow, now = new Date()): Promise<HunterStats> {
+  const { day: today } = await dayInfo(now);
+  const [quests, events, breaks] = await Promise.all([loadQuests(user.id), loadEvents(user.id), loadBreaks(user.id)]);
   const first = [user.created_day, ...quests.map((x) => x.start_day)].sort()[0] ?? today;
-  const days: DayResult[] = [];
-  for (let d = first; d <= today; d = addDays(d, 1)) days.push(scoreDay(quests, states, d, user.clear_threshold));
+  const days = scoreRange(quests, events, first < today ? first : today, today, user.clear_threshold);
   const totalExp = days.reduce((s, d) => s + d.earned, 0);
   const lv = levelFromExp(totalExp);
-  const rank = rankForLevel(lv.level);
-  const attributes: Record<string, number> = { INT: 0, TEC: 0, VIT: 0, STR: 0, PER: 0, FTH: 0, BND: 0 };
-  for (const d of days) for (const [k, v] of Object.entries(d.byAttribute)) attributes[k] = (attributes[k] ?? 0) + v / 10;
-  for (const k of Object.keys(attributes)) attributes[k] = Math.round(attributes[k] * 10) / 10;
-  const past = (n: number) => days.filter((d) => d.day < today && d.day >= addDays(today, -n) && d.available > 0);
-  const rate = (arr: DayResult[]) => (arr.length ? arr.filter((d) => d.cleared).length / arr.length : 0);
+  const attributes: Record<string, number> = { INT: 0, TEC: 0, VIT: 0 };
+  for (const d of days) for (const [k, v] of Object.entries(d.byAttribute)) attributes[k] = (attributes[k] ?? 0) + v;
+  const last7 = days.filter((d) => d.day < today && d.day >= addDays(today, -7));
+  const withQuests = last7.filter((d) => d.quests > 0);
   const loggedDays = new Set(events.map((e) => e.day_key));
   return {
-    totalExp, level: lv.level, intoLevel: lv.intoLevel, needed: lv.needed, rank,
-    streak: streaks(days, today), attributes,
-    clearRate7: rate(past(7)), clearRate30: rate(past(30)),
-    daysLogged: loggedDays.size, fullClears: days.filter((d) => d.available > 0 && d.completion >= 1).length,
-    capacityMinutes: Math.round(user.daily_minutes * capacityShare(rank)),
+    totalExp,
+    level: lv.level,
+    intoLevel: lv.intoLevel,
+    needed: lv.needed,
+    rank: rankForLevel(lv.level),
+    streak: streaks(days, today, breaks),
+    attributes,
+    clearRate7: withQuests.length ? withQuests.reduce((s, d) => s + d.clearRate, 0) / withQuests.length : 0,
+    daysLogged7: last7.filter((d) => loggedDays.has(d.day)).length,
+    daysLogged: loggedDays.size,
+    daysCleared: days.filter((d) => d.cleared).length,
+    questsCompleted: days.reduce((s, d) => s + d.done, 0),
+    today: days.at(-1)!,
     days,
   };
 }
 
 export async function computeToday(user: UserRow, now = new Date()) {
-  const today = dayKey(now);
-  const quests = (await loadQuests(user.id)).filter((x) => x.start_day <= today && (x.end_day === null || today < x.end_day));
-  const states = foldEvents(await loadEvents(user.id, today));
-  const day = scoreDay(quests, states, today, user.clear_threshold);
-  const sections: Record<string, { name: string; done: number; total: number; quests: any[] }> = {};
+  const info = await dayInfo(now);
+  const quests = (await loadQuests(user.id, info.day)).filter((x) => questActiveOn(x, info.day));
+  const states = foldEvents(await loadEvents(user.id, info.day));
+  const day = scoreDay(quests, states, info.day, user.clear_threshold);
+  const groups = new Map<string, { key: string; name: string; done: number; total: number; quests: any[] }>();
   for (const quest of quests) {
-    const s = states.get(`${today}|${quest.id}`);
-    const sec = (sections[quest.section] ??= { name: quest.section, done: 0, total: 0, quests: [] });
-    sec.total++;
-    if (questComplete(quest, s)) sec.done++;
-    sec.quests.push({
+    const key = quest.track_id ? `t${quest.track_id}` : "custom";
+    const g = groups.get(key) ?? { key, name: quest.track_name ?? "Your quests", done: 0, total: 0, quests: [] };
+    const s = states.get(`${info.day}|${quest.id}`);
+    const credit = questCredit(quest, s);
+    g.total++;
+    if (credit >= 1) g.done++;
+    g.quests.push({
       id: quest.id, name: quest.name, type: quest.type, target: quest.target, unit: quest.unit, step: quest.step,
-      attribute: quest.attribute, exp: quest.exp, value: s?.value ?? 0, text: s?.text ?? "",
-      fraction: questFraction(quest, s), earned: questExp(quest, s),
+      attribute: quest.attribute, exp: quest.exp, source: quest.source, verifiable: quest.verifiable,
+      value: s?.value ?? 0, text: s?.text ?? "", words: wordCount(s?.text), credit, earned: questExp(quest, s),
     });
+    groups.set(key, g);
   }
-  const ms = msUntilReset(now);
+  // Custom quests last; tracks in creation order.
+  const sections = [...groups.values()].sort((a, b) => (a.key === "custom" ? 1 : b.key === "custom" ? -1 : 0));
+  const plan = (await q<any>(`SELECT status, diagnosis, message FROM daily_plans WHERE user_id = $1 AND day_key = $2`, [user.id, info.day]))[0] ?? null;
   return {
-    day: today,
-    sections: Object.values(sections),
+    ...info,
+    sections,
+    quests: day.quests,
+    done: day.done,
     earned: day.earned,
     available: day.available,
-    completion: day.completion,
+    clearRate: day.clearRate,
     cleared: day.cleared,
     threshold: user.clear_threshold,
-    msUntilReset: ms,
-    warning: inWarningWindow(now) && day.available > 0 && day.completion < user.clear_threshold,
+    warning: info.warningWindow && day.quests > 0 && day.clearRate < user.clear_threshold,
+    plan,
   };
 }

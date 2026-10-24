@@ -1,245 +1,169 @@
-// Death Quest lifecycle: contract → human approval → stake payment → proof → verdict → human approval → settle.
-// Money never moves on agent output alone; every money step waits on an approved row in `approvals`.
+// Weekly Death Quest (spec §12): one per user per ISO week (IST). Locked once created.
+// active → submitted → validating → passed | failed | awaiting_human | pending_agent
+// The validator agent is specified later; until then validateDeathQuest() returns pending_agent.
+// The pledge columns exist for the later Pine Labs phase; nothing here moves money.
 import { logEvent, one, q } from "./db";
-import { runArchitect } from "./architect";
-import { offlineContract, offlineGrade, offlineQuiz, offlineVerify } from "./architect/offline";
-import { decideVerdict, enforceContract } from "./architect/rules";
-import type { QuizOutT, SignalT } from "./architect/schemas";
-import { computeStats, type UserRow } from "./hunter";
-import { createPaymentLink, createRefund, getPaymentLinkStatus, pineMode } from "./pinelabs";
-import { baselineArtifactGrade, checkUrl, quizSignal } from "./verify";
+import { dayInfo } from "./clock";
+import { getAgentProvider } from "./agents";
+import { generateJson, llmEnabled } from "./llm";
+import { mockDeathQuestOptions, mockQuiz } from "./agents/mock";
+import { DEATH_QUEST_OPTIONS_SYSTEM, QUIZ_SYSTEM } from "./agents/prompts";
+import { DeathQuestOptions, QuizQuestions, type DeathQuestOptionsT } from "./agents/schemas";
+import { wordCount } from "./game";
+import { activeGoal, goalTracks } from "./planner";
+import type { UserRow } from "./session";
 
-export type DQStatus =
-  | "PENDING_APPROVAL" | "UNVERIFIABLE" | "REJECTED" | "PAYMENT_PENDING" | "ACTIVE" | "VERIFYING"
-  | "REFUND_PENDING" | "REFUNDED" | "PASSED" | "FORFEITED" | "EXPIRED";
+export const PROOF_TYPES = ["quiz", "entry", "url", "commit"] as const;
+export type ProofType = (typeof PROOF_TYPES)[number];
 
-const nowIst = () => new Date(Date.now() + 330 * 60_000).toISOString().replace("Z", "+05:30");
+const PUBLIC_FIELDS = `id, week_key, title, description, proof_type, deadline, status, submitted_at, verdict, created_at, pledge_amount_inr, charity`;
 
-async function hunterCtx(user: UserRow) {
-  const s = await computeStats(user);
-  return {
-    name: user.hunter_name, rank: s.rank, level: s.level, daily_minutes: user.daily_minutes,
-    capacity_minutes: s.capacityMinutes, clear_threshold: user.clear_threshold, stake_appetite_paise: user.stake_appetite_paise,
-  };
-}
-
-async function setStatus(id: number, status: DQStatus) {
-  await q(`UPDATE death_quests SET status = $2, updated_at = now() WHERE id = $1`, [id, status]);
-}
-
-export async function getDeathQuest(id: number) {
-  const dq = await one<any>(`SELECT * FROM death_quests WHERE id = $1`, [id]);
+function publicView(dq: any) {
   if (!dq) return null;
-  const stake = await one<any>(`SELECT * FROM stakes WHERE death_quest_id = $1 ORDER BY id DESC LIMIT 1`, [id]);
-  const proof = await one<any>(`SELECT * FROM proofs WHERE death_quest_id = $1 ORDER BY id DESC LIMIT 1`, [id]);
-  const quiz = await one<any>(`SELECT id, questions, score, graded_at FROM quizzes WHERE death_quest_id = $1 ORDER BY id DESC LIMIT 1`, [id]);
-  const approval = await one<any>(`SELECT id, kind, status, reason FROM approvals WHERE subject_id = $1 ORDER BY id DESC LIMIT 1`, [id]);
-  return { ...dq, stake, proof, quiz: quiz ? { ...quiz, questions: (quiz.questions as any[]).map((x) => ({ id: x.id, prompt: x.prompt })) } : null, approval };
+  const sub = dq.submission ?? null;
+  // Never send expected quiz answers to the browser.
+  const quiz = sub?.quiz ? { questions: sub.quiz.questions.map((x: any) => x.question), answers: sub.quiz.answers ?? null } : null;
+  return { ...dq, submission: sub ? { ...sub, quiz } : null };
 }
 
-// ---------- 1. Contract ----------
+export async function currentDeathQuest(userId: number) {
+  const { week } = await dayInfo();
+  const dq = await one<any>(`SELECT ${PUBLIC_FIELDS}, submission FROM death_quests WHERE user_id = $1 AND week_key = $2`, [userId, week]);
+  return publicView(dq);
+}
 
-export async function createDeathQuest(user: UserRow, input: { task: string; deadline: string; stake_paise: number }) {
-  const deadline = new Date(input.deadline);
-  if (Number.isNaN(deadline.getTime()) || deadline.getTime() < Date.now() + 5 * 60_000) throw new Error("Deadline must be at least 5 minutes in the future.");
-  const deadlineIso = deadline.toISOString();
-  const hunter = await hunterCtx(user);
-  const run = await runArchitect(
-    "contract",
-    { hunter, progress: {}, input: { task: input.task, deadline: deadlineIso, requested_stake_paise: input.stake_paise }, now_ist: nowIst() },
-    () => offlineContract(input.task, deadlineIso, input.stake_paise),
-    user.id,
-  );
-  const c = enforceContract(run.output, { appetitePaise: user.stake_appetite_paise, requestedStakePaise: input.stake_paise, deadline: deadlineIso, task: input.task });
-  const status: DQStatus = c.verifiable ? "PENDING_APPROVAL" : "UNVERIFIABLE";
-  const row = await one<{ id: number }>(
-    `INSERT INTO death_quests (user_id, task, deadline, stake_paise, learning, verify_methods, acceptance_criteria, risk_flags, verifiable, alternative, reviewer_note, status, contract_run_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
-    [user.id, input.task, deadlineIso, c.stake_paise, c.learning, JSON.stringify(c.verify_methods), JSON.stringify(c.acceptance_criteria),
-      JSON.stringify(c.risk_flags), c.verifiable, c.alternative_if_unverifiable || null, c.reviewer_note, status, run.runId],
-  );
-  const id = row!.id;
-  await logEvent(user.id, "death_quest.contract_drafted", { death_quest_id: id, verifiable: c.verifiable, stake_paise: c.stake_paise, provider: run.provider, agent_run_id: run.runId });
-  if (c.verifiable) {
-    await q(`INSERT INTO approvals (user_id, kind, subject_id, summary, external_ref) VALUES ($1,'contract',$2,$3,$4)`, [
-      user.id, id,
-      JSON.stringify({ hunter: user.hunter_name, task: c.task, deadline: deadlineIso, stake_paise: c.stake_paise, verify_methods: c.verify_methods, acceptance_criteria: c.acceptance_criteria, risk_flags: c.risk_flags, reviewer_note: c.reviewer_note, agent_provider: run.provider }),
-      run.externalRunId,
+export async function deathQuestHistory(userId: number) {
+  return q<any>(`SELECT ${PUBLIC_FIELDS} FROM death_quests WHERE user_id = $1 ORDER BY id DESC LIMIT 12`, [userId]);
+}
+
+export async function suggestOptions(user: UserRow): Promise<DeathQuestOptionsT & { source: string }> {
+  const goal = await activeGoal(user.id);
+  const tracks = goal ? (await goalTracks(goal.id)).filter((t) => t.status === "active").map((t) => t.name) : [];
+  const fallback = () => ({ ...mockDeathQuestOptions(goal?.title ?? "your goal", tracks), source: "mock" });
+  if (!llmEnabled() || !goal) return fallback();
+  try {
+    const { data } = await generateJson(DeathQuestOptions, [
+      { role: "system", content: DEATH_QUEST_OPTIONS_SYSTEM },
+      { role: "user", content: JSON.stringify({ goal: goal.title, deadline: goal.deadline, daily_minutes: goal.daily_minutes, tracks, current_level: goal.current_level }) },
     ]);
+    return { options: data.options.slice(0, 3), source: "llm" };
+  } catch {
+    return fallback();
   }
-  return { id, contract: c, provider: run.provider };
 }
 
-// ---------- 2. Human approvals ----------
-
-export async function listApprovals(status = "pending") {
-  return q<any>(`SELECT a.*, u.slug FROM approvals a LEFT JOIN users u ON u.id = a.user_id WHERE a.status = $1 ORDER BY a.id DESC LIMIT 100`, [status]);
+export async function createDeathQuest(user: UserRow, input: { title: string; description: string; proof_type: string; deadline: string }) {
+  const title = String(input.title ?? "").trim().slice(0, 120);
+  const description = String(input.description ?? "").trim().slice(0, 800);
+  if (title.length < 3) throw new Error("Give the Death Quest a title.");
+  if (description.length < 10) throw new Error("Describe exactly what counts as done (10+ characters).");
+  if (!PROOF_TYPES.includes(input.proof_type as ProofType)) throw new Error("Pick a proof type: quiz, entry, url or commit.");
+  const deadline = new Date(input.deadline);
+  const now = Date.now();
+  if (Number.isNaN(deadline.getTime())) throw new Error("Invalid deadline.");
+  if (deadline.getTime() < now + 10 * 60_000) throw new Error("The deadline must be at least 10 minutes away.");
+  if (deadline.getTime() > now + 7 * 86_400_000) throw new Error("The deadline must be within 7 days.");
+  const { week } = await dayInfo();
+  const row = await one<{ id: number }>(
+    `INSERT INTO death_quests (user_id, week_key, title, description, proof_type, deadline) VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (user_id, week_key) DO NOTHING RETURNING id`,
+    [user.id, week, title, description, input.proof_type, deadline.toISOString()],
+  );
+  if (!row) throw new Error("You already have a Death Quest this week. It's locked until the week ends.");
+  await logEvent(user.id, "death_quest_created", { death_quest_id: row.id, week, title, proof_type: input.proof_type, deadline: deadline.toISOString() });
+  return row.id;
 }
 
-export async function decideApproval(approvalId: number, decision: "approve" | "reject", decidedBy: string, reason?: string) {
-  const a = await one<any>(`SELECT * FROM approvals WHERE id = $1`, [approvalId]);
-  if (!a) throw new Error("Approval not found");
-  if (a.status !== "pending") throw new Error(`Already ${a.status}`);
-  await q(`UPDATE approvals SET status = $2, decided_by = $3, reason = $4, decided_at = now() WHERE id = $1`, [approvalId, decision === "approve" ? "approved" : "rejected", decidedBy, reason ?? null]);
-  await logEvent(a.user_id, "approval.decision", { approval_id: approvalId, kind: a.kind, subject_id: a.subject_id, decision, decided_by: decidedBy, reason: reason ?? null });
-  return a.kind === "contract" ? onContractDecision(a.subject_id, decision, reason) : onSettlementDecision(a.subject_id, decision, reason);
-}
-
-async function onContractDecision(dqId: number, decision: "approve" | "reject", reason?: string) {
-  const dq = await one<any>(`SELECT d.*, u.hunter_name, u.slug FROM death_quests d JOIN users u ON u.id = d.user_id WHERE d.id = $1`, [dqId]);
+async function getOwned(user: UserRow, id: number) {
+  const dq = await one<any>(`SELECT * FROM death_quests WHERE id = $1 AND user_id = $2`, [id, user.id]);
   if (!dq) throw new Error("Death Quest not found");
-  if (decision === "reject") {
-    await q(`UPDATE death_quests SET status = 'REJECTED', reviewer_note = COALESCE($2, reviewer_note), updated_at = now() WHERE id = $1`, [dqId, reason ?? null]);
-    return { status: "REJECTED" };
+  return dq;
+}
+
+/** Quiz proof: questions are generated from the quest topic at submission time and stored with expected answers. */
+export async function startQuiz(user: UserRow, id: number) {
+  const dq = await getOwned(user, id);
+  if (dq.proof_type !== "quiz") throw new Error("This Death Quest is not a quiz");
+  if (dq.status !== "active") throw new Error(`Death Quest is ${dq.status}`);
+  if (dq.submission?.quiz?.questions) return dq.submission.quiz.questions.map((x: any) => x.question) as string[];
+  const topic = `${dq.title}. ${dq.description}`;
+  let questions = mockQuiz(dq.title).questions;
+  let source = "mock";
+  if (llmEnabled()) {
+    try {
+      questions = (await generateJson(QuizQuestions, [{ role: "system", content: QUIZ_SYSTEM }, { role: "user", content: topic }])).data.questions.slice(0, 3);
+      source = "llm";
+    } catch { /* keep mock questions */ }
   }
-  if (dq.stake_paise <= 0) {
-    await setStatus(dqId, "ACTIVE");
-    return { status: "ACTIVE" };
-  }
-  const stake = await one<{ id: number }>(`INSERT INTO stakes (death_quest_id, amount_paise, provider) VALUES ($1,$2,$3) RETURNING id`, [dqId, dq.stake_paise, pineMode()]);
-  const link = await createPaymentLink({ stakeId: stake!.id, amountPaise: dq.stake_paise, description: `Arise Death Quest: ${dq.task}`, hunterName: dq.hunter_name, slug: dq.slug });
-  await q(`UPDATE stakes SET payment_link_id = $2, payment_link_url = $3, pine_order_id = $4, raw = $5, updated_at = now() WHERE id = $1`, [stake!.id, link.paymentLinkId, link.url, link.orderId, JSON.stringify(link.raw)]);
-  await setStatus(dqId, "PAYMENT_PENDING");
-  await logEvent(dq.user_id, "payment.link_created", { death_quest_id: dqId, stake_id: stake!.id, amount_paise: dq.stake_paise, payment_link_id: link.paymentLinkId, provider: pineMode() });
-  return { status: "PAYMENT_PENDING", payment_link_url: link.url };
+  await q(`UPDATE death_quests SET submission = $2, updated_at = now() WHERE id = $1`, [id, JSON.stringify({ quiz: { questions, generated_at: new Date().toISOString(), source } })]);
+  return questions.map((x) => x.question);
 }
 
-// ---------- 3. Payment ----------
-
-export async function markStakePaid(stakeId: number, orderId: string | null, source: string, raw: unknown = {}) {
-  const st = await one<any>(`SELECT s.*, d.user_id, d.status AS dq_status FROM stakes s JOIN death_quests d ON d.id = s.death_quest_id WHERE s.id = $1`, [stakeId]);
-  if (!st) throw new Error("Stake not found");
-  if (st.status === "PAID") return { already: true };
-  await q(`UPDATE stakes SET status = 'PAID', pine_order_id = COALESCE($2, pine_order_id), raw = $3, updated_at = now() WHERE id = $1`, [stakeId, orderId, JSON.stringify(raw)]);
-  if (st.dq_status === "PAYMENT_PENDING") await setStatus(st.death_quest_id, "ACTIVE");
-  await logEvent(st.user_id, "payment.success", { stake_id: stakeId, death_quest_id: st.death_quest_id, amount_paise: st.amount_paise, order_id: orderId ?? st.pine_order_id, source });
-  return { already: false };
-}
-
-/** Poll Pine Labs for a pending link (works even when webhooks are not configured). */
-export async function refreshPayment(dqId: number) {
-  const st = await one<any>(`SELECT * FROM stakes WHERE death_quest_id = $1 ORDER BY id DESC LIMIT 1`, [dqId]);
-  if (!st || st.status === "PAID" || st.provider === "mock" || !st.payment_link_id) return st?.status ?? null;
-  const s = await getPaymentLinkStatus(st.payment_link_id);
-  if (s.status === "PAID") await markStakePaid(st.id, s.orderId, "status_poll", s.raw);
-  return s.status;
-}
-
-// ---------- 4. Quiz ----------
-
-export async function getOrCreateQuiz(user: UserRow, dqId: number): Promise<{ id: number; questions: { id: string; prompt: string }[] }> {
-  const existing = await one<any>(`SELECT * FROM quizzes WHERE death_quest_id = $1 AND graded_at IS NULL ORDER BY id DESC LIMIT 1`, [dqId]);
-  if (existing) return { id: existing.id, questions: existing.questions.map((x: any) => ({ id: x.id, prompt: x.prompt })) };
-  const dq = await one<any>(`SELECT * FROM death_quests WHERE id = $1 AND user_id = $2`, [dqId, user.id]);
-  if (!dq) throw new Error("Death Quest not found");
-  const notes = (await q<{ text: string }>(`SELECT text FROM quest_events WHERE user_id = $1 AND kind = 'text' AND text IS NOT NULL ORDER BY id DESC LIMIT 5`, [user.id])).map((r) => r.text);
-  const run = await runArchitect("quiz", { hunter: { name: user.hunter_name }, input: { topic: dq.task, criteria: dq.acceptance_criteria, notes } }, () => offlineQuiz(dq.task, notes), user.id);
-  const questions = run.output.questions.slice(0, 3);
-  const row = await one<{ id: number }>(`INSERT INTO quizzes (death_quest_id, questions) VALUES ($1,$2) RETURNING id`, [dqId, JSON.stringify(questions)]);
-  return { id: row!.id, questions: questions.map((x) => ({ id: x.id, prompt: x.prompt })) };
-}
-
-export async function gradeQuiz(user: UserRow, quizId: number, answers: Record<string, string>) {
-  const quiz = await one<any>(`SELECT z.*, d.user_id FROM quizzes z JOIN death_quests d ON d.id = z.death_quest_id WHERE z.id = $1`, [quizId]);
-  if (!quiz || quiz.user_id !== user.id) throw new Error("Quiz not found");
-  const questions = quiz.questions as QuizOutT["questions"];
-  const run = await runArchitect("quiz_grade", { input: { questions, answers } }, () => offlineGrade(questions, answers), user.id);
-  const score = Math.max(0, Math.min(1, run.output.score));
-  await q(`UPDATE quizzes SET answers = $2, grades = $3, score = $4, graded_at = now() WHERE id = $1`, [quizId, JSON.stringify(answers), JSON.stringify(run.output.grades), score]);
-  await logEvent(user.id, "quiz.graded", { quiz_id: quizId, death_quest_id: quiz.death_quest_id, score, provider: run.provider });
-  return { score, grades: run.output.grades };
-}
-
-// ---------- 5. Proof → verdict → settlement approval ----------
-
-export async function submitProof(user: UserRow, dqId: number, submission: { url?: string; text?: string }) {
-  const dq = await one<any>(`SELECT * FROM death_quests WHERE id = $1 AND user_id = $2`, [dqId, user.id]);
-  if (!dq) throw new Error("Death Quest not found");
-  if (dq.status !== "ACTIVE") throw new Error(`Proof can only be submitted while ACTIVE (now ${dq.status}).`);
-  const methods: string[] = dq.verify_methods;
-  const criteria: string[] = dq.acceptance_criteria;
-  const signals: SignalT[] = [];
-  let artifactText = (submission.text ?? "").trim();
-
-  if (methods.includes("url_live")) {
-    if (!submission.url) signals.push({ name: "url_live", result: "missing", detail: "No URL submitted" });
-    else {
-      const c = await checkUrl(submission.url);
-      signals.push({ name: "url_live", result: c.ok ? "pass" : "fail", detail: c.detail });
-      if (c.ok && !artifactText) artifactText = `${c.title}\n${c.text}`;
+export async function submitProof(user: UserRow, id: number, body: any) {
+  const dq = await getOwned(user, id);
+  if (dq.status !== "active") throw new Error(`Death Quest is ${dq.status}`);
+  if (new Date(dq.deadline).getTime() < Date.now()) throw new Error("The deadline has passed.");
+  let submission: Record<string, unknown>;
+  switch (dq.proof_type as ProofType) {
+    case "quiz": {
+      const qs = dq.submission?.quiz?.questions;
+      if (!qs) throw new Error("Start the quiz first.");
+      const answers: string[] = Array.isArray(body.answers) ? body.answers.map((a: unknown) => String(a ?? "").slice(0, 2000)) : [];
+      if (answers.length !== qs.length || answers.some((a) => a.trim().length < 3)) throw new Error("Answer every question.");
+      submission = { quiz: { ...dq.submission.quiz, answers } };
+      break;
+    }
+    case "entry": {
+      const text = String(body.text ?? "").trim().slice(0, 20_000);
+      if (wordCount(text) < 30) throw new Error("Write at least 30 words.");
+      submission = { text, words: wordCount(text) };
+      break;
+    }
+    case "url":
+    case "commit": {
+      const url = String(body.url ?? "").trim();
+      if (!/^https?:\/\/\S+\.\S+/.test(url)) throw new Error("Paste a full link starting with https://");
+      if (dq.proof_type === "commit" && !/github\.com|gitlab\.com|bitbucket\.org/.test(url)) throw new Error("Paste a GitHub, GitLab or Bitbucket commit or repo link.");
+      submission = { url, note: String(body.note ?? "").slice(0, 1000) };
+      break;
     }
   }
-  let quizScore: number | null = null;
-  if (methods.includes("teach_back_quiz")) {
-    const z = await one<any>(`SELECT score FROM quizzes WHERE death_quest_id = $1 AND graded_at IS NOT NULL ORDER BY id DESC LIMIT 1`, [dqId]);
-    quizScore = z ? Number(z.score) : null;
-    signals.push(quizSignal(quizScore));
-  }
-  if (methods.includes("artifact_grade")) signals.push(baselineArtifactGrade(artifactText, dq.task, criteria));
-  if (methods.includes("github_activity")) signals.push({ name: "github_activity", result: "missing", detail: "GitHub check arrives in Phase 2" });
-
-  const run = await runArchitect(
-    "verify",
-    { input: { task: dq.task, acceptance_criteria: criteria, learning: dq.learning, signals, artifact_excerpt: artifactText.slice(0, 3000), quiz_score: quizScore } },
-    () => offlineVerify(signals, methods, dq.learning, quizScore),
-    user.id,
+  await q(`UPDATE death_quests SET status = 'submitted', submission = $2, submitted_at = now(), updated_at = now() WHERE id = $1`, [id, JSON.stringify(submission)]);
+  await logEvent(user.id, "death_quest_submitted", { death_quest_id: id, proof_type: dq.proof_type });
+  await q(`UPDATE death_quests SET status = 'validating', updated_at = now() WHERE id = $1`, [id]);
+  const { day } = await dayInfo();
+  const result = await getAgentProvider().validateDeathQuest(
+    {
+      quest: { title: dq.title, description: dq.description, proof_type: dq.proof_type, deadline: new Date(dq.deadline).toISOString() },
+      submission,
+      pledge: dq.pledge_amount_inr ? { amount_inr: dq.pledge_amount_inr, charity: dq.charity ?? "" } : null,
+      user_disputed: !!dq.user_disputed,
+    },
+    { userId: user.id, today: day },
   );
-
-  // The agent may only change the subjective artifact_grade signal; measured signals stay as measured.
-  const agentArtifact = run.output.signals.find((s) => s.name === "artifact_grade");
-  const finalSignals = signals.map((s) => (s.name === "artifact_grade" && agentArtifact && artifactText ? { ...s, result: agentArtifact.result, detail: agentArtifact.detail || s.detail } : s));
-  const decision = decideVerdict(finalSignals, methods, dq.learning, quizScore);
-  const reasons = [...run.output.reasons];
-  if (run.output.verdict !== decision.verdict) reasons.push(`Signal rules set the verdict to "${decision.verdict}" (agent said "${run.output.verdict}").`);
-
-  const proof = await one<{ id: number }>(
-    `INSERT INTO proofs (death_quest_id, submission, signals, confidence, verdict, recommended_settlement, reasons, needs_human, agent_run_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8) RETURNING id`,
-    [dqId, JSON.stringify({ url: submission.url ?? null, text_chars: (submission.text ?? "").length }), JSON.stringify(finalSignals), decision.confidence, decision.verdict, decision.settlement, JSON.stringify(reasons), run.runId],
-  );
-  await setStatus(dqId, "VERIFYING");
-  await q(`INSERT INTO approvals (user_id, kind, subject_id, summary, external_ref) VALUES ($1,'settlement',$2,$3,$4)`, [
-    user.id, dqId,
-    JSON.stringify({ hunter: user.hunter_name, task: dq.task, stake_paise: dq.stake_paise, verdict: decision.verdict, confidence: decision.confidence, settlement: decision.settlement, signals: finalSignals, reasons, proof_id: proof!.id, agent_provider: run.provider }),
-    run.externalRunId,
-  ]);
-  await logEvent(user.id, "verdict.issued", { death_quest_id: dqId, proof_id: proof!.id, verdict: decision.verdict, confidence: decision.confidence, provider: run.provider });
-  return { verdict: decision.verdict, confidence: decision.confidence, settlement: decision.settlement, signals: finalSignals, reasons };
+  await settle(id, result.output.status, { ...result.output, provider: result.provider }, result.runId);
+  return result.output;
 }
 
-async function onSettlementDecision(dqId: number, decision: "approve" | "reject", reason?: string) {
-  const dq = await one<any>(`SELECT * FROM death_quests WHERE id = $1`, [dqId]);
-  const proof = await one<any>(`SELECT * FROM proofs WHERE death_quest_id = $1 ORDER BY id DESC LIMIT 1`, [dqId]);
-  if (!dq || !proof) throw new Error("Nothing to settle");
-  if (decision === "reject" || proof.recommended_settlement === "need_more_proof") {
-    await setStatus(dqId, "ACTIVE");
-    await logEvent(dq.user_id, "settlement.more_proof", { death_quest_id: dqId, reason: reason ?? null });
-    return { status: "ACTIVE" };
+/** Apply a verdict. A failed Death Quest breaks the current streak (best streak is kept). */
+export async function settle(id: number, status: string, verdict: Record<string, unknown>, agentRunId: number | null, by = "agent") {
+  const dq = await one<any>(`SELECT * FROM death_quests WHERE id = $1`, [id]);
+  if (!dq) throw new Error("Death Quest not found");
+  await q(`UPDATE death_quests SET status = $2, verdict = $3, agent_run_id = COALESCE($4, agent_run_id), updated_at = now() WHERE id = $1`, [id, status, JSON.stringify({ ...verdict, by }), agentRunId]);
+  if (status === "failed") {
+    const { day } = await dayInfo();
+    await q(`INSERT INTO streak_breaks (user_id, day_key, reason) VALUES ($1,$2,$3)`, [dq.user_id, day, `death_quest:${id}`]);
   }
-  const stake = await one<any>(`SELECT * FROM stakes WHERE death_quest_id = $1 AND status = 'PAID' ORDER BY id DESC LIMIT 1`, [dqId]);
-  if (proof.recommended_settlement === "forfeit") {
-    if (stake) await q(`UPDATE stakes SET settlement = 'forfeit', updated_at = now() WHERE id = $1`, [stake.id]);
-    await setStatus(dqId, "FORFEITED");
-    await logEvent(dq.user_id, "stake.forfeited", { death_quest_id: dqId, amount_paise: stake?.amount_paise ?? 0, destination: "charity" });
-    return { status: "FORFEITED" };
-  }
-  if (!stake) {
-    await setStatus(dqId, "PASSED");
-    return { status: "PASSED" };
-  }
-  const r = await createRefund({ orderId: stake.pine_order_id ?? `mock_${stake.id}`, stakeId: stake.id, amountPaise: stake.amount_paise });
-  const done = stake.provider === "mock";
-  await q(`UPDATE stakes SET settlement = 'refund', refund_id = $2, refund_status = $3, status = $4, updated_at = now() WHERE id = $1`, [stake.id, r.refundId, done ? "PROCESSED" : r.status, done ? "REFUNDED" : "REFUND_PENDING"]);
-  await setStatus(dqId, done ? "REFUNDED" : "REFUND_PENDING");
-  await logEvent(dq.user_id, "refund.created", { death_quest_id: dqId, stake_id: stake.id, refund_id: r.refundId, refund_status: r.status, amount_paise: stake.amount_paise, provider: stake.provider });
-  return { status: done ? "REFUNDED" : "REFUND_PENDING", refund_id: r.refundId };
+  if (["passed", "failed"].includes(status)) await logEvent(dq.user_id, "death_quest_settled", { death_quest_id: id, status, by });
+  else await logEvent(dq.user_id, "death_quest_validation", { death_quest_id: id, status, by });
 }
 
-export async function markRefunded(refundOrOrderId: string, raw: unknown) {
-  const st = await one<any>(`SELECT s.*, d.user_id FROM stakes s JOIN death_quests d ON d.id = s.death_quest_id WHERE s.refund_id = $1 OR s.pine_order_id = $1`, [refundOrOrderId]);
-  if (!st || st.status !== "REFUND_PENDING") return false;
-  await q(`UPDATE stakes SET status = 'REFUNDED', refund_status = 'PROCESSED', raw = $2, updated_at = now() WHERE id = $1`, [st.id, JSON.stringify(raw)]);
-  await setStatus(st.death_quest_id, "REFUNDED");
-  await logEvent(st.user_id, "refund.processed", { stake_id: st.id, death_quest_id: st.death_quest_id });
-  return true;
+/** Active Death Quests past their deadline with no proof → failed. */
+export async function expireDeathQuests(userId?: number) {
+  const rows = await q<{ id: number }>(
+    `SELECT id FROM death_quests WHERE status = 'active' AND deadline < now() ${userId ? "AND user_id = $1" : ""}`,
+    userId ? [userId] : [],
+  );
+  for (const r of rows) await settle(r.id, "failed", { reasons: ["Deadline passed without a submission."] }, null, "system");
+  return rows.length;
 }

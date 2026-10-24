@@ -1,17 +1,19 @@
 {
-  "name": "arise",
+  "name": "arrize",
   "version": "0.1.0",
   "private": true,
-  "description": "Arise: an AI Quest Architect that turns goals into daily quests, with Death Quest stakes settled through Pine Labs.",
+  "description": "Arrize: an AI quest architect that turns a learning goal into adaptive daily quests and a weekly Death Quest.",
   "scripts": {
     "dev": "next dev -p ${PORT:-3000}",
     "build": "next build",
     "start": "next start -p ${PORT:-3000} -H 0.0.0.0",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "test": "tsx --test tests/*.test.ts",
     "seed": "tsx scripts/seed.ts",
-    "e2e": "tsx scripts/e2e.ts",
-    "agent:setup": "tsx scripts/agenticorg-setup.ts",
-    "agent:evals": "tsx scripts/evals.ts"
+    "planner": "tsx scripts/run-planner.ts",
+    "agents:check": "tsx scripts/agents-check.ts",
+    "agents:create": "tsx scripts/agents-create.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.11",
@@ -26,6 +28,8 @@
     "@types/pg": "^8",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.4.3",
     "tsx": "^4.23.15",
     "typescript": "^5"
   },

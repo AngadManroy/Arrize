@@ -1,7 +1,15 @@
+import type { Metadata } from "next";
+import { AppShell } from "@/components/AppShell";
 import Board from "@/components/Board";
-import { NoHunter } from "@/components/Nav";
+import { requireOnboarded } from "@/lib/guard";
 
-export default async function Page({ searchParams }: { searchParams: Promise<{ h?: string }> }) {
-  const { h } = await searchParams;
-  return h ? <Board h={h} /> : <NoHunter />;
+export const metadata: Metadata = { title: "Quests · Arrize" };
+
+export default async function Page() {
+  const user = await requireOnboarded();
+  return (
+    <AppShell active="/board" name={user.hunter_name}>
+      <Board />
+    </AppShell>
+  );
 }

@@ -1,7 +1,15 @@
-import StatusWindow from "@/components/StatusWindow";
-import { NoHunter } from "@/components/Nav";
+import type { Metadata } from "next";
+import { AppShell } from "@/components/AppShell";
+import Stats from "@/components/Stats";
+import { requireOnboarded } from "@/lib/guard";
 
-export default async function Page({ searchParams }: { searchParams: Promise<{ h?: string }> }) {
-  const { h } = await searchParams;
-  return h ? <StatusWindow h={h} /> : <NoHunter />;
+export const metadata: Metadata = { title: "Stats · Arrize" };
+
+export default async function Page() {
+  const user = await requireOnboarded();
+  return (
+    <AppShell active="/status" name={user.hunter_name}>
+      <Stats />
+    </AppShell>
+  );
 }

@@ -1,10 +1,20 @@
 {
-  "name": "Arise",
-  "short_name": "Arise",
-  "description": "Daily quests from an AI Quest Architect.",
-  "start_url": "/",
+  "name": "Arrize",
+  "short_name": "Arrize",
+  "description": "Your goal, turned into daily quests by an AI coach.",
+  "id": "/",
+  "start_url": "/board",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#05070d",
-  "theme_color": "#05070d",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+  "orientation": "portrait",
+  "background_color": "#04060e",
+  "theme_color": "#04060e",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Today's quests", "url": "/board" },
+    { "name": "Coach", "url": "/coach" }
+  ]
 }

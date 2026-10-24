@@ -1,44 +1,50 @@
 // Postgres schema. Idempotent: safe to run on every boot.
+// Quests are one table for both kinds the spec names:
+//   custom templates  → source = 'custom', end_day NULL (recur every day until paused/deleted)
+//   daily quests      → source = 'planner' | 'onboarding', start_day = the day, end_day = day + 1
+// Progress is append-only (quest_events) and folded into values, so nothing derived is stored.
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
-  slug TEXT UNIQUE NOT NULL,
+  email TEXT UNIQUE NOT NULL,
   hunter_name TEXT NOT NULL,
-  daily_minutes INT NOT NULL DEFAULT 60,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
   clear_threshold REAL NOT NULL DEFAULT 0.7,
-  stake_appetite_paise INT NOT NULL DEFAULT 10000,
+  onboarded_at TIMESTAMPTZ,
+  telegram_chat_id TEXT,
+  telegram_link_token TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+  id SERIAL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL,
+  why TEXT,
+  deadline DATE,
+  daily_minutes INT NOT NULL DEFAULT 30,
+  current_level TEXT,
+  best_time TEXT,
+  past_blockers TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS tracks (
   id SERIAL PRIMARY KEY,
   user_id INT NOT NULL REFERENCES users(id),
-  goal TEXT NOT NULL,
-  why TEXT,
-  current_level TEXT,
-  deadline DATE,
-  priority INT NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'active',
-  created_by TEXT NOT NULL DEFAULT 'architect',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS milestones (
-  id SERIAL PRIMARY KEY,
-  track_id INT NOT NULL REFERENCES tracks(id),
+  goal_id INT REFERENCES goals(id),
   name TEXT NOT NULL,
-  due_date DATE,
-  check_type TEXT NOT NULL DEFAULT 'quiz',
-  criteria TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  score REAL
+  priority INT NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS quests (
   id SERIAL PRIMARY KEY,
   user_id INT NOT NULL REFERENCES users(id),
   track_id INT REFERENCES tracks(id),
-  section TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('planner','custom','onboarding')),
   name TEXT NOT NULL,
   type TEXT NOT NULL CHECK (type IN ('tick','count','text')),
   target REAL NOT NULL DEFAULT 1,
@@ -46,15 +52,14 @@ CREATE TABLE IF NOT EXISTS quests (
   step REAL NOT NULL DEFAULT 1,
   attribute TEXT NOT NULL DEFAULT 'INT',
   exp INT NOT NULL DEFAULT 10,
-  est_minutes INT NOT NULL DEFAULT 10,
-  active BOOLEAN NOT NULL DEFAULT true,
-  source TEXT NOT NULL DEFAULT 'architect',
-  override BOOLEAN NOT NULL DEFAULT false,
+  verifiable BOOLEAN NOT NULL DEFAULT false,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','paused','deleted')),
   sort INT NOT NULL DEFAULT 0,
-  start_day DATE NOT NULL DEFAULT CURRENT_DATE,
+  start_day DATE NOT NULL,
   end_day DATE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS quests_user_day ON quests(user_id, start_day);
 
 -- APPEND-ONLY. Current values are always folded from these rows, never overwritten.
 CREATE TABLE IF NOT EXISTS quest_events (
@@ -65,122 +70,98 @@ CREATE TABLE IF NOT EXISTS quest_events (
   kind TEXT NOT NULL CHECK (kind IN ('tick','untick','inc','dec','set','text')),
   value REAL,
   text TEXT,
-  device_id TEXT,
   source TEXT NOT NULL DEFAULT 'app',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS quest_events_user_day ON quest_events(user_id, day_key);
 
-CREATE TABLE IF NOT EXISTS plan_proposals (
-  id SERIAL PRIMARY KEY,
+-- Written when a day closes at reset. The board computes live values; this is the record.
+CREATE TABLE IF NOT EXISTS day_logs (
   user_id INT NOT NULL REFERENCES users(id),
-  mode TEXT NOT NULL DEFAULT 'plan',
-  brief JSONB,
-  payload JSONB NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
+  day_key DATE NOT NULL,
+  clear_rate REAL NOT NULL,
+  cleared BOOLEAN NOT NULL,
+  exp_earned INT NOT NULL,
+  quests INT NOT NULL,
+  closed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, day_key)
+);
+
+-- One planner run per user per day (idempotency guard for cron + lazy generation).
+CREATE TABLE IF NOT EXISTS daily_plans (
+  user_id INT NOT NULL REFERENCES users(id),
+  day_key DATE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  diagnosis TEXT,
+  reasons JSONB,
+  message TEXT,
   agent_run_id INT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  decided_at TIMESTAMPTZ
+  PRIMARY KEY (user_id, day_key)
 );
 
-CREATE TABLE IF NOT EXISTS death_quests (
+-- A failed Death Quest breaks the current streak from this day on (best streak is kept).
+CREATE TABLE IF NOT EXISTS streak_breaks (
   id SERIAL PRIMARY KEY,
   user_id INT NOT NULL REFERENCES users(id),
-  task TEXT NOT NULL,
-  deadline TIMESTAMPTZ NOT NULL,
-  stake_paise INT NOT NULL DEFAULT 0,
-  learning BOOLEAN NOT NULL DEFAULT false,
-  verify_methods JSONB NOT NULL DEFAULT '[]',
-  acceptance_criteria JSONB NOT NULL DEFAULT '[]',
-  risk_flags JSONB NOT NULL DEFAULT '[]',
-  verifiable BOOLEAN NOT NULL DEFAULT true,
-  alternative TEXT,
-  reviewer_note TEXT,
-  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
-  contract_run_id INT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS stakes (
-  id SERIAL PRIMARY KEY,
-  death_quest_id INT NOT NULL REFERENCES death_quests(id),
-  amount_paise INT NOT NULL,
-  provider TEXT NOT NULL DEFAULT 'pinelabs',
-  payment_link_id TEXT,
-  payment_link_url TEXT,
-  pine_order_id TEXT,
-  status TEXT NOT NULL DEFAULT 'PAYMENT_PENDING',
-  settlement TEXT,
-  refund_id TEXT,
-  refund_status TEXT,
-  raw JSONB,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS proofs (
-  id SERIAL PRIMARY KEY,
-  death_quest_id INT NOT NULL REFERENCES death_quests(id),
-  submission JSONB NOT NULL DEFAULT '{}',
-  signals JSONB NOT NULL DEFAULT '[]',
-  confidence REAL,
-  verdict TEXT,
-  recommended_settlement TEXT,
-  reasons JSONB NOT NULL DEFAULT '[]',
-  needs_human BOOLEAN NOT NULL DEFAULT true,
-  agent_run_id INT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS quizzes (
-  id SERIAL PRIMARY KEY,
-  death_quest_id INT NOT NULL REFERENCES death_quests(id),
-  questions JSONB NOT NULL,
-  answers JSONB,
-  grades JSONB,
-  score REAL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  graded_at TIMESTAMPTZ
-);
-
--- Guild Master queue: every contract and every money movement waits here for a human.
-CREATE TABLE IF NOT EXISTS approvals (
-  id SERIAL PRIMARY KEY,
-  user_id INT REFERENCES users(id),
-  kind TEXT NOT NULL CHECK (kind IN ('contract','settlement')),
-  subject_id INT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  summary JSONB NOT NULL,
-  external_ref TEXT,
-  decided_by TEXT,
-  reason TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  decided_at TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS agent_runs (
-  id SERIAL PRIMARY KEY,
-  user_id INT REFERENCES users(id),
-  agent TEXT NOT NULL DEFAULT 'quest-architect',
-  mode TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  input JSONB,
-  output JSONB,
-  external_run_id TEXT,
-  status TEXT NOT NULL,
-  error TEXT,
-  latency_ms INT,
+  day_key DATE NOT NULL,
+  reason TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id SERIAL PRIMARY KEY,
   user_id INT NOT NULL REFERENCES users(id),
-  role TEXT NOT NULL,
+  thread TEXT NOT NULL DEFAULT 'onboarding' CHECK (thread IN ('onboarding','coach')),
+  role TEXT NOT NULL CHECK (role IN ('learner','coach')),
   content TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT 'app',
   meta JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS chat_user_thread ON chat_messages(user_id, thread, id);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id SERIAL PRIMARY KEY,
+  user_id INT REFERENCES users(id),
+  agent TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT,
+  external_run_id TEXT,
+  status TEXT NOT NULL,
+  confidence REAL,
+  input JSONB,
+  output JSONB,
+  error TEXT,
+  fell_back BOOLEAN NOT NULL DEFAULT false,
+  latency_ms INT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS death_quests (
+  id SERIAL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users(id),
+  week_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  proof_type TEXT NOT NULL CHECK (proof_type IN ('quiz','entry','url','commit')),
+  deadline TIMESTAMPTZ NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  submission JSONB,
+  submitted_at TIMESTAMPTZ,
+  verdict JSONB,
+  agent_run_id INT,
+  user_disputed BOOLEAN NOT NULL DEFAULT false,
+  pledge_amount_inr INT,
+  charity TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, week_key)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -190,4 +171,5 @@ CREATE TABLE IF NOT EXISTS events (
   payload JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS events_type ON events(type, created_at);
 `;

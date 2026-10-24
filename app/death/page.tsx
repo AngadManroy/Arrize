@@ -1,7 +1,15 @@
-import DeathQuests from "@/components/DeathQuests";
-import { NoHunter } from "@/components/Nav";
+import type { Metadata } from "next";
+import { AppShell } from "@/components/AppShell";
+import DeathQuest from "@/components/DeathQuest";
+import { requireOnboarded } from "@/lib/guard";
 
-export default async function Page({ searchParams }: { searchParams: Promise<{ h?: string }> }) {
-  const { h } = await searchParams;
-  return h ? <DeathQuests h={h} /> : <NoHunter />;
+export const metadata: Metadata = { title: "Death Quest · Arrize" };
+
+export default async function Page() {
+  const user = await requireOnboarded();
+  return (
+    <AppShell active="/death" name={user.hunter_name}>
+      <DeathQuest />
+    </AppShell>
+  );
 }

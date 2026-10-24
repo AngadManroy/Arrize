@@ -1,209 +1,234 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, deviceId, fmtDuration } from "./client";
-import { Nav } from "./Nav";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, fmtDay, fmtDuration, wordsIn } from "./api";
+import { useShell } from "./AppShell";
 
-type Quest = { id: number; name: string; type: "tick" | "count" | "text"; target: number; unit: string; step: number; attribute: string; exp: number; value: number; text: string; fraction: number; earned: number };
-type Section = { name: string; done: number; total: number; quests: Quest[] };
-type Data = {
-  hunter: { name: string; slug: string };
-  today: { day: string; sections: Section[]; earned: number; available: number; completion: number; cleared: boolean; threshold: number; msUntilReset: number; warning: boolean };
-  stats: { level: number; rank: string; intoLevel: number; needed: number; totalExp: number; streak: { current: number; best: number }; clearRate7: number };
+type Quest = {
+  id: number; name: string; type: "tick" | "count" | "text"; target: number; unit: string; step: number; attribute: string; exp: number;
+  source: string; verifiable: boolean; value: number; text: string; words: number; credit: number; earned: number;
 };
+type Section = { key: string; name: string; done: number; total: number; quests: Quest[] };
+type Today = {
+  day: string; msUntilReset: number; demoMinutes: number | null; sections: Section[]; quests: number; done: number; earned: number; available: number;
+  clearRate: number; cleared: boolean; threshold: number; warning: boolean;
+  plan: { status: string; diagnosis: string | null; message: string | null } | null;
+};
+type DQ = { id: number; title: string; status: string; deadline: string; proof_type: string } | null;
 
-export default function Board({ h }: { h: string }) {
-  const [data, setData] = useState<Data | null>(null);
-  const [error, setError] = useState("");
-  const [toast, setToast] = useState("");
+const DIAG: Record<string, string> = { on_track: "On track", scattered: "Refocused", stalled: "Fresh angle", coasting: "Levelled up" };
+
+export default function Board() {
+  const shell = useShell();
+  const [data, setData] = useState<{ today: Today; deathQuest: DQ } | null>(null);
   const [left, setLeft] = useState(0);
-  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+  const [flash, setFlash] = useState<number | null>(null);
+  const [pops, setPops] = useState<{ id: number; x: number; y: number; t: string }[]>([]);
+  const loading = useRef(false);
 
   const load = useCallback(async () => {
+    if (loading.current) return;
+    loading.current = true;
     try {
-      const d = await api<Data>(`/api/today?h=${encodeURIComponent(h)}`);
+      const d = await api<{ today: Today; deathQuest: DQ }>("/api/today");
       setData(d);
       setLeft(d.today.msUntilReset);
-      try { localStorage.setItem("arise.h", h); } catch { /* ignore */ }
+      setError("");
     } catch (e: any) {
       setError(e.message);
+    } finally {
+      loading.current = false;
     }
-  }, [h]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
+  // Countdown; at reset, reload the board (the planner writes the new day).
   useEffect(() => {
-    const t = setInterval(() => setLeft((x) => (x <= 1000 ? (load(), 0) : x - 1000)), 1000);
+    const t = setInterval(() => setLeft((x) => {
+      if (x <= 1000) { setTimeout(() => { load(); shell.refresh(); }, 1500); return 0; }
+      return x - 1000;
+    }), 1000);
     return () => clearInterval(t);
-  }, [load]);
+  }, [load, shell]);
+  // While the planner is writing today's quests, poll.
+  const planning = data?.today.plan?.status === "running";
+  useEffect(() => {
+    if (!planning) return;
+    const t = setInterval(() => { load(); }, 3000);
+    return () => clearInterval(t);
+  }, [planning, load]);
+  useEffect(() => { if (data && !planning) shell.refresh().catch(() => undefined); }, [planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function send(quest: Quest, kind: string, extra: { value?: number; text?: string } = {}) {
+  async function send(q: Quest, kind: string, extra: { value?: number; text?: string } = {}, ev?: React.MouseEvent) {
     try {
-      const r = await api<any>("/api/events", { body: { h, quest_id: quest.id, kind, device_id: deviceId(), ...extra } });
-      setData((d) => (d ? { ...d, today: r.today, stats: r.stats } : d));
-      if (r.rankUp) flash(`Rank up! You are now rank ${r.stats.rank}`);
-      else if (r.leveledUp) flash(`Level up! Level ${r.stats.level}`);
+      const r = await api<any>("/api/progress", { body: { quest_id: q.id, kind, ...extra } });
+      const nq = r.today.sections.flatMap((s: Section) => s.quests).find((x: Quest) => x.id === q.id);
+      const gained = (nq?.earned ?? 0) - q.earned;
+      if (gained > 0 && ev) {
+        const id = Date.now();
+        setPops((p) => [...p, { id, x: ev.clientX, y: ev.clientY - 10, t: `+${gained} EXP` }]);
+        setTimeout(() => setPops((p) => p.filter((x) => x.id !== id)), 1100);
+      }
+      if (nq && nq.credit >= 1 && q.credit < 1) { setFlash(q.id); setTimeout(() => setFlash(null), 700); }
+      setData((d) => (d ? { ...d, today: { ...r.today, msUntilReset: d.today.msUntilReset } } : d));
+      shell.applyStats({ ...r.stats, todayRate: r.today.clearRate, todayCleared: r.today.cleared });
+      if (!data?.today.cleared && r.today.cleared) shell.toast("DAY CLEARED · STREAK SECURED");
     } catch (e: any) {
-      flash(e.message);
+      shell.toast(e.message, true);
     }
   }
-  function flash(t: string) {
-    setToast(t);
-    setTimeout(() => setToast(""), 2600);
-  }
 
-  if (error) return <div className="wrap"><div className="banner bad">{error}</div><Link className="btn" href="/">Back</Link></div>;
-  if (!data) return <div className="wrap muted">Loading the System…</div>;
+  if (error) return <div className="win"><p className="err">{error}</p><button className="btn sm" onClick={load}>Retry</button></div>;
+  if (!data) return <div className="win"><div className="loading-line"><span className="spinner" />LOADING QUEST LOG…</div></div>;
 
-  const { today, stats, hunter } = data;
-  const empty = today.sections.length === 0;
-  const hoursLeft = Math.ceil(left / 3_600_000);
+  const { today, deathQuest } = data;
+  const hoursLeft = Math.max(1, Math.ceil(left / 3_600_000));
+  const pct = Math.round(today.clearRate * 100);
 
   return (
-    <main className="wrap">
-      {toast && <div className="toast">{toast}</div>}
-
-      <header className="panel glow">
-        <div className="row between">
-          <div className="row">
-            <div className={`rank ${stats.rank.length > 1 ? "long" : ""}`}>{stats.rank}</div>
-            <div>
-              <p className="sys-title" style={{ margin: 0 }}>Hunter</p>
-              <h1>{hunter.name}</h1>
-            </div>
+    <>
+      {deathQuest && ["active", "submitted", "validating", "pending_agent", "awaiting_human"].includes(deathQuest.status) ? (
+        <Link href="/death" className="dq-strip appear" style={{ color: "inherit" }}>
+          <span className="skull" aria-hidden>☠</span>
+          <div className="grow">
+            <b>Death Quest · {deathQuest.status === "active" ? "active" : deathQuest.status.replace("_", " ")}</b>
+            <div style={{ fontSize: 14 }}>{deathQuest.title}</div>
           </div>
-          <div style={{ textAlign: "right" }}>
-            <div className="mono" style={{ fontSize: 22 }}>LV {stats.level}</div>
-            <div className="small muted">Streak {stats.streak.current} · Best {stats.streak.best}</div>
+          {deathQuest.status === "active" && <DqCountdown deadline={deathQuest.deadline} />}
+        </Link>
+      ) : !deathQuest ? (
+        <Link href="/death" className="dq-strip appear" style={{ color: "inherit", opacity: 0.85 }}>
+          <span className="skull" aria-hidden>☠</span>
+          <div className="grow"><b>No Death Quest this week</b><div className="small muted">Commit to one verifiable challenge. Fail it and the streak breaks.</div></div>
+          <span className="tiny">Forge →</span>
+        </Link>
+      ) : null}
+
+      <section className="win appear">
+        <div className="qhead">
+          <p className="win-t">Daily quest · {fmtDay(today.day)}</p>
+          <span className="timer">{today.demoMinutes ? `DEMO DAY ${today.demoMinutes}M` : "RESETS 06:00 IST"} · IN <b>{fmtDuration(left)}</b></span>
+        </div>
+
+        <div className="exp-wrap">
+          <div className="exp-meta">
+            <span>CLEAR {pct}% · {today.done}/{today.quests} DONE</span>
+            <span>{today.cleared ? "CLEARED" : `CLEAR AT ${Math.round(today.threshold * 100)}%`}</span>
+          </div>
+          <div className="exp-bar">
+            <div className="exp-fill" style={{ width: `${pct}%`, background: today.cleared ? "linear-gradient(90deg, #2bd893, var(--ok))" : undefined }} />
+            <span className="mark" style={{ left: `${today.threshold * 100}%` }} title="Clear threshold" />
           </div>
         </div>
-        <div style={{ marginTop: 12 }}>
-          <div className="row between small"><span className="muted">EXP</span><span className="mono">{stats.intoLevel} / {stats.needed}</span></div>
-          <div className="bar"><i style={{ width: `${Math.min(100, (stats.intoLevel / stats.needed) * 100)}%` }} /></div>
-        </div>
-      </header>
 
-      <div className="panel" style={{ marginTop: 14 }}>
-        <div className="row between">
-          <div>
-            <p className="sys-title" style={{ margin: 0 }}>Daily quest · {today.day}</p>
-            <div className="small muted">Resets at 06:00 IST in <span className="mono">{fmtDuration(left)}</span></div>
+        {today.warning && (
+          <div className="warn" role="alert">
+            ⚠ WARNING: {hoursLeft}H UNTIL RESET. YOU ARE AT {pct}%, BELOW YOUR {Math.round(today.threshold * 100)}% CLEAR LINE. {shell.stats?.streak.current ? `YOUR ${shell.stats.streak.current}-DAY STREAK IS AT RISK.` : "CLEAR TODAY TO START A STREAK."}
           </div>
-          {today.cleared ? <span className="tag good">Cleared</span> : <span className="tag">{Math.round(today.completion * 100)}%</span>}
-        </div>
-        <div className="bar good" style={{ marginTop: 10 }}>
-          <i style={{ width: `${Math.round(today.completion * 100)}%` }} />
-          <span className="mark" style={{ left: `${today.threshold * 100}%` }} title="Clear threshold" />
-        </div>
-        <div className="small muted" style={{ marginTop: 6 }}>{today.earned} / {today.available} EXP · clear at {Math.round(today.threshold * 100)}%</div>
-      </div>
+        )}
 
-      {today.warning && (
-        <div className="banner warn" style={{ marginTop: 14 }}>
-          <b>Warning:</b> {hoursLeft}h left and you are below your {Math.round(today.threshold * 100)}% threshold. Your {stats.streak.current}-day streak is at risk.
-        </div>
-      )}
+        {today.plan?.status === "running" ? (
+          <div className="sysmsg"><small>Planner</small><span className="row"><span className="spinner" /> Reading your last 7 days and writing today&apos;s quests…</span></div>
+        ) : today.plan?.message ? (
+          <div className="sysmsg"><small>Planner · {DIAG[today.plan.diagnosis ?? ""] ?? "Today"}</small>{today.plan.message}</div>
+        ) : null}
 
-      {empty ? (
-        <div className="panel glow" style={{ marginTop: 14 }}>
-          <p className="sys-title">No quests yet</p>
-          <p>The Quest Architect will build your board from your goal.</p>
-          <Link className="btn primary" href={`/onboard?h=${h}`}>Talk to the System</Link>
-        </div>
-      ) : (
-        today.sections.map((s) => (
-          <section key={s.name} className="panel" style={{ marginTop: 14 }}>
-            <div className="row between" style={{ marginBottom: 4 }}>
-              <h3>{s.name}</h3>
-              <span className={`tag ${s.done === s.total ? "good" : ""}`}>{s.done}/{s.total}</span>
-            </div>
-            {s.quests.map((q) => <QuestRow key={q.id} q={q} send={send} />)}
-          </section>
-        ))
-      )}
+        {today.sections.length === 0 && today.plan?.status !== "running" && (
+          <div className="empty">
+            <p>No quests on the board yet.</p>
+            <Link className="btn sm" href="/forge">Forge your own quest</Link>
+          </div>
+        )}
 
-      <div style={{ marginTop: 14 }}>
-        {adding ? <AddQuest h={h} done={() => { setAdding(false); load(); }} /> : <button className="btn ghost sm" onClick={() => setAdding(true)}>+ Add your own quest</button>}
-      </div>
+        {today.sections.map((s) => (
+          <div className="grp" key={s.key}>
+            <div className="grp-t">{s.name}<em className={s.done === s.total ? "full" : ""}>{s.done}/{s.total}</em></div>
+            {s.quests.map((q) => <QuestRow key={q.id} q={q} send={send} flash={flash === q.id} />)}
+          </div>
+        ))}
+      </section>
 
-      <Nav h={h} active="/board" />
-    </main>
+      {pops.map((p) => <span key={p.id} className="pop" style={{ left: p.x, top: p.y }}>{p.t}</span>)}
+    </>
   );
 }
 
-function QuestRow({ q, send }: { q: Quest; send: (q: Quest, kind: string, extra?: { value?: number; text?: string }) => void }) {
-  const done = q.fraction >= 1;
+function DqCountdown({ deadline }: { deadline: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  return <span className="timer"><b>{fmtDuration(new Date(deadline).getTime() - now)}</b></span>;
+}
+
+const Check = () => <svg viewBox="0 0 16 16" aria-hidden><path d="M2.5 8.5l3.5 3.5 7.5-8" /></svg>;
+
+function QuestRow({ q, send, flash }: { q: Quest; send: (q: Quest, kind: string, extra?: { value?: number; text?: string }, ev?: React.MouseEvent) => void; flash: boolean }) {
+  const done = q.credit >= 1;
   const [text, setText] = useState(q.text);
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   useEffect(() => setText(q.text), [q.text]);
-
-  return (
-    <div className={`quest ${done ? "done" : ""}`} style={{ flexWrap: q.type === "text" && open ? "wrap" : "nowrap" }}>
-      {q.type === "tick" && (
-        <button className={`check ${done ? "on" : ""}`} aria-label={done ? "Untick" : "Tick"} onClick={() => send(q, done ? "untick" : "tick")}>{done ? "✓" : ""}</button>
-      )}
-      {q.type === "text" && (
-        <button className={`check ${done ? "on" : ""}`} aria-label="Write entry" onClick={() => setOpen((o) => !o)}>{done ? "✓" : "✎"}</button>
-      )}
-      <div className="grow">
-        <div className="qname">{q.name}</div>
-        <div className="small muted">
-          <span className="tag" style={{ marginRight: 6 }}>{q.attribute}</span>
-          {q.type === "count" && <span className="mono">{q.value}/{q.target} {q.unit}</span>}
-          {q.type === "text" && !done && <span>write at least 40 characters</span>}
-        </div>
-      </div>
-      {q.type === "count" && (
-        <div className="counter">
-          <button className="btn icon ghost" aria-label="Decrease" onClick={() => send(q, "dec", { value: q.step })}>−</button>
-          <button className="btn icon" aria-label="Increase" onClick={() => send(q, "inc", { value: q.step })}>+</button>
-        </div>
-      )}
-      <div className="exp">+{q.earned}/{q.exp}</div>
-      {q.type === "text" && open && (
-        <div style={{ flexBasis: "100%" }}>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Write your entry…" />
-          <div className="row between small" style={{ marginTop: 6 }}>
-            <span className="muted">{text.trim().length} chars</span>
-            <button className="btn sm" onClick={() => { send(q, "text", { text }); setOpen(false); }}>Save entry</button>
-          </div>
-        </div>
-      )}
+  const act = async (kind: string, extra: { value?: number; text?: string } = {}, ev?: React.MouseEvent) => {
+    if (busy) return;
+    setBusy(true);
+    await send(q, kind, extra, ev);
+    setBusy(false);
+  };
+  const tags = (
+    <div className="q-hint">
+      <span className="q-stat">{q.attribute}</span>
+      {q.verifiable && <span className="q-tag" title="Can be checked with a quiz">VERIFIABLE</span>}
+      {q.source === "custom" && <span>YOUR QUEST</span>}
+      {q.type === "count" && <span>{q.value}/{q.target} {q.unit}</span>}
+      {q.type === "text" && !done && <span>{q.words ? `${q.words}/30 WORDS` : "WRITE 30+ WORDS"}</span>}
     </div>
   );
-}
 
-function AddQuest({ h, done }: { h: string; done: () => void }) {
-  const [f, setF] = useState({ name: "", type: "tick", target: 1, unit: "", step: 1, section: "Custom", attribute: "INT", est_minutes: 10 });
-  const [err, setErr] = useState("");
-  const set = (k: string, v: any) => setF((x) => ({ ...x, [k]: v }));
-  async function save() {
-    try {
-      await api("/api/quests", { body: { h, ...f } });
-      done();
-    } catch (e: any) { setErr(e.message); }
-  }
-  return (
-    <div className="panel stack">
-      <p className="sys-title">Forge a quest</p>
-      <input type="text" placeholder="Quest name" value={f.name} onChange={(e) => set("name", e.target.value)} />
-      <div className="row wrapflex">
-        <select value={f.type} onChange={(e) => set("type", e.target.value)} style={{ width: 120 }}>
-          <option value="tick">Tick off</option><option value="count">Counter</option><option value="text">Text entry</option>
-        </select>
-        {f.type === "count" && <>
-          <input type="number" style={{ width: 90 }} value={f.target} onChange={(e) => set("target", Number(e.target.value))} placeholder="Target" />
-          <input type="text" style={{ width: 90 }} value={f.unit} onChange={(e) => set("unit", e.target.value)} placeholder="Unit" />
-          <input type="number" style={{ width: 80 }} value={f.step} onChange={(e) => set("step", Number(e.target.value))} placeholder="Step" />
-        </>}
-        <input type="text" style={{ width: 130 }} value={f.section} onChange={(e) => set("section", e.target.value)} placeholder="Section" />
-        <select value={f.attribute} onChange={(e) => set("attribute", e.target.value)} style={{ width: 90 }}>
-          {["INT", "TEC", "VIT", "STR", "PER", "FTH", "BND"].map((a) => <option key={a}>{a}</option>)}
-        </select>
-        <input type="number" style={{ width: 90 }} value={f.est_minutes} onChange={(e) => set("est_minutes", Number(e.target.value))} title="Minutes" />
+  if (q.type === "text") {
+    const n = wordsIn(text);
+    return (
+      <div className={`q text-q ${done ? "done" : ""} ${flash ? "flash" : ""}`}>
+        <div className="q-row">
+          <button className="box pen" aria-label={open ? "Close entry" : "Write entry"} onClick={() => setOpen((o) => !o)}>{done ? <Check /> : "✎"}</button>
+          <div className="q-main" onClick={() => setOpen((o) => !o)} style={{ cursor: "pointer" }}>
+            <div className="q-name">{q.name}</div>
+            {tags}
+          </div>
+          <span className="q-exp">+{q.earned}/{q.exp}</span>
+        </div>
+        {open && (
+          <>
+            <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Write at least 30 words in your own words…" autoFocus />
+            <div className="row between">
+              <span className="timer" style={{ color: n >= 30 ? "var(--ok)" : undefined }}>{n}/30 WORDS</span>
+              <button className="btn sm" disabled={busy || !text.trim()} onClick={async (e) => { await act("text", { text }, e); if (n >= 30) setOpen(false); }}>Save entry</button>
+            </div>
+          </>
+        )}
       </div>
-      {err && <div className="banner bad">{err}</div>}
-      <div className="row"><button className="btn primary sm" onClick={save}>Add quest</button><button className="btn ghost sm" onClick={done}>Cancel</button></div>
+    );
+  }
+
+  return (
+    <div className={`q ${q.type === "count" ? "count-q" : ""} ${done ? "done" : ""} ${flash ? "flash" : ""}`}>
+      {q.type === "tick" ? (
+        <button className="box" aria-label={done ? `Untick ${q.name}` : `Complete ${q.name}`} aria-pressed={done} disabled={busy} onClick={(e) => act(done ? "untick" : "tick", {}, e)}><Check /></button>
+      ) : (
+        <span className="box" aria-hidden>{done ? <Check /> : <span className="mono" style={{ fontSize: 10, color: "var(--mana)" }}>{Math.round(q.credit * 100)}</span>}</span>
+      )}
+      <div className="q-main">
+        <div className="q-name">{q.name}</div>
+        {tags}
+        {q.type === "count" && <div className="q-bar"><i style={{ width: `${Math.round(q.credit * 100)}%` }} /></div>}
+      </div>
+      {q.type === "count" && (
+        <div className="cnt">
+          <button aria-label={`Decrease ${q.name}`} disabled={busy || q.value <= 0} onClick={(e) => act("dec", { value: q.step }, e)}>−</button>
+          <button aria-label={`Increase ${q.name}`} disabled={busy} onClick={(e) => act("inc", { value: q.step }, e)}>+</button>
+        </div>
+      )}
+      <span className="q-exp">+{q.earned}/{q.exp}</span>
     </div>
   );
 }

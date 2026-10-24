@@ -1,93 +1,86 @@
-# Arise — Phase 1 (The System Awakens)
+# Arrize — AI quest architect for learners
 
-An AI **Quest Architect** turns a goal into daily quests sized to your real free time, levels you up as you clear them,
-and lets you stake money on a **Death Quest** that the agent verifies, a human approves, and **Pine Labs** settles.
+People set a goal to learn something and quit within weeks. Arrize learns what you want to achieve, turns it into
+daily quests, adapts when you slip, and holds you to one verifiable **Death Quest** a week. RPG status-screen look
+(EXP, levels, ranks E → Monarch, streaks), calm coach voice.
 
-Built for AI Builders Day 2026 (Track 01 · AI for Learning).
+Built for AI Builders Day (learning track).
 
-## What's in Phase 1
+## What works
 
-| Company Stack item | Where it lives |
+| Feature | Where |
 | --- | --- |
-| Product on a public URL | Next.js app (UI + API) — deploy on Replit |
-| Agent on AgenticOrg with a human in the loop | `lib/architect/*` calls the Quest Architect on AgenticOrg; every contract and every money move waits in `/admin` for a Guild Master |
-| Pine Labs payment flow | `lib/pinelabs.ts`: payment link → webhook + status check → refund API |
-| Users + timestamped proof | Append-only `events` table; download at `/admin` → **Proof CSV** |
+| Demo sign-in (email + hunter name, signed httpOnly cookie, **demo-grade**) | `/`, `lib/session.ts` |
+| Onboarding chat with a streaming coach (≤ ~8 turns) → plan summary → confirm → **Goal Intake agent** writes goal, ≤ 3 tracks, day-1 quests | `/onboard`, `lib/chat.ts` |
+| Today board: quests grouped by track, tick / counter (+/−, partial EXP) / 30-word entry, EXP · level · rank · streak header, reset countdown, warning banner in the last 4 h | `/board` |
+| **Forge**: add your own recurring quests (name, type, target, unit, step, attribute, EXP, track), pause / resume / delete / retarget | `/forge`, `lib/quests.ts` |
+| **Quest Planner agent** at each reset: diagnoses on_track / scattered / stalled / coasting from the last 7 days, pauses tracks, raises targets or swaps quest types, writes 4–6 quests + a message. Idempotent per user per day | `lib/planner.ts` |
+| Coach chat that sees the goal, tracks, last 7 days and today | `/coach` |
+| Weekly Death Quest: 3 coach suggestions, locked once created, proof by quiz / entry / URL / commit, validator stub → `pending_agent`, failure breaks the streak (best kept) | `/death`, `lib/deathquest.ts` |
+| Stats: attribute radar + 13-week clear-rate heatmap | `/status` |
+| Admin + proof pack: signups, DAU, agent runs (fallbacks in red), planner runs, Death Quests (human pass/fail), event log export JSON/CSV, run planner now | `/admin` |
+| Installable PWA (manifest, mobile bottom tab bar) | `public/manifest.webmanifest` |
 
-Screens: `/` create hunter · `/onboard` chat with the System + plan card · `/board` daily quests · `/status` Status Window (radar + vitals) · `/death` Death Quests · `/admin` Guild Master console.
+Telegram was dropped from this build on request (UI only).
 
-## Run it on Replit (5 minutes)
-
-1. **Import**: Replit → Create → Import from GitHub → this repo. Language: Node.js.
-2. **Database**: Replit → Tools → Database (PostgreSQL). It sets `DATABASE_URL` for you.
-   Without it the app uses embedded PGlite in `./.data` (fine for testing, not persistent on autoscale deploys).
-3. **Secrets** (Tools → Secrets) — copy from `.env.example`:
-   - `APP_URL` = your public Replit URL (no trailing slash)
-   - `ADMIN_KEY` = any string; the Guild Master types it on `/admin`
-   - `ANTHROPIC_API_KEY` (recommended: natural onboarding chat + fallback Architect)
-   - `AGENTICORG_API_KEY`, `AGENTICORG_AGENT_ID` (see below)
-   - `PINE_CLIENT_ID`, `PINE_CLIENT_SECRET`, `PINE_BASE_URL` (UAT: `https://pluraluat.v2.pinepg.in`)
-4. **Run**: `npm install && npm run build && npm start` (set this as the Run command; the server reads `$PORT`).
-5. **Deploy**: Replit → Deploy → Reserved VM or Autoscale with the same build/run commands.
-6. **Pine Labs webhook**: in the Pine Labs dashboard set the webhook URL to `<APP_URL>/api/payments/webhook`.
-   No webhook? The Death Quest page has "I've paid · check status", which polls Pine Labs directly.
-7. Open `/admin`, enter `ADMIN_KEY`, click **Seed demo** to create `demo`, `scattered` and `fresh` hunters.
-
-Everything runs with **no keys at all**: the Architect falls back to deterministic offline rules and payments use a mock checkout.
-Add keys one by one and the same flows switch to the real services.
-
-## The Quest Architect (the agent)
-
-One LLM agent, not a swarm: a system prompt (`lib/architect/prompt.ts`), strict JSON schemas per mode
-(`lib/architect/schemas.ts`), and code-side guardrails (`lib/architect/rules.ts`).
-
-```
-mode        trigger                         who decides
-plan        onboarding brief complete       hunter: accept / apply cuts / keep mine
-contract    hunter drafts a Death Quest     Guild Master approves before payment opens
-quiz        learning Death Quest            agent writes 3 teach-back questions
-quiz_grade  answers submitted               agent grades 0–1
-verify      proof submitted                 Guild Master approves the refund/forfeit
-```
-
-Provider order per run: **AgenticOrg → Claude → offline rules**. Every run is validated with zod (one retry with the
-error), re-checked by rules, and logged in `agent_runs` + `events`. Guardrails enforced in code, whatever the model says:
-
-- Load is recomputed from `est_minutes` vs capacity (rank E plans at 60% of stated minutes); overload → warning + cut list.
-- Max 3 tracks; workout prescriptions (sets, reps, pushups…) become "Log today's workout".
-- Fitness, unsafe and unverifiable tasks can't be staked; stake capped to the hunter's appetite.
-- Verdicts follow the signal rules (`decideVerdict`): code owns measured signals (live URL, quiz score); the agent may only judge the artifact.
-- Money never moves on agent output: refunds and forfeits run only after an approved row in `approvals`.
-
-### Set up the agent on AgenticOrg
+## Run locally
 
 ```bash
-AGENTICORG_API_KEY=ao_sk_... npm run agent:setup   # creates + promotes the agent, times one PLAN run
+npm install
+cp .env.example .env.local   # fill OPENROUTER_API_KEY at least; everything else has a fallback
+npm run dev                  # http://localhost:3000
 ```
 
-Copy the printed `AGENTICORG_AGENT_ID` into Secrets. The script uses `POST /api/v1/agents` and
-`POST /api/v1/agents/{id}/run` (`{action, inputs, context}` → `{run_id, status, output, confidence}`).
-If your tenant needs it, also set `AGENTICORG_COMPANY_ID`. You can instead create the agent in the AgenticOrg UI and paste
-`ARCHITECT_SYSTEM_PROMPT` from `lib/architect/prompt.ts`.
+No `DATABASE_URL` → embedded PGlite in `./.data`. No LLM key → mock coach and mock agents (recorded as `mock`).
+Click **Try the demo hunter** on the home page for a user with 13 weeks of history.
 
-## Tests
+## Agents
+
+One interface (`lib/agents/index.ts`), two implementations, chosen by `AGENT_PROVIDER`:
+
+- `local` — the LLM via OpenRouter (`LLM_MODEL=anthropic/claude-haiku-5.5`, then `LLM_FALLBACK_MODELS` in order, each
+  with its own timeout inside one 50 s budget) with zod-validated JSON, one retry with the validation error, then the
+  deterministic mock. Coach replies stream (~2 s to first token on Haiku).
+- `agenticorg` — runs the agent on AgenticOrg (`POST /api/v1/agents/{id}/run`). If that fails, falls back to local
+  **and records it**: every `agent_runs` row stores the provider that actually ran, `fell_back`, and the reason.
+
+Agent SOPs are in `lib/agents/prompts.ts` (verbatim from the spec). Code owns every number and every database write;
+agents only return JSON, and guardrails (`normalizeQuests`) re-check it: known tracks only, 4–6 quests, at least one
+verifiable, the top-priority track is never paused.
 
 ```bash
-npm test            # game rules: day boundary, partial credit, levels, ranks, streaks
-npm run e2e         # 12 Phase 1 acceptance tests against an in-memory DB
-npm run agent:evals # 10 Architect evals through the configured provider
-BASE=https://your-app ADMIN_KEY=... npx tsx scripts/smoke-http.ts   # full flow over HTTP
+npm run agents:check     # proves the AgenticOrg key works (GET /api/v1/agents)
+npm run agents:create    # creates Goal Intake + Quest Planner in shadow mode, prints their ids, runs a sample
+npm run planner -- 1     # force-run the planner for user 1 (add "tomorrow" to plan the next day)
 ```
 
-## Game rules (from the spec)
+## Daily reset (cron)
 
-- Quest day runs **06:00 → 06:00 IST**; a log at 02:30 belongs to the previous day. Warning banner in the final 4 hours.
-- Counters earn partial EXP (`exp × min(value/target, 1)`); text entries need 40+ characters. Partial credit never satisfies a Death Quest.
-- A day is cleared at ≥ the hunter's threshold (default 70%). Level n→n+1 costs `round(100 × n^1.5)` EXP.
-- Ranks: E 1–9 · D 10–19 · C 20–34 · B 35–49 · A 50–69 · S 70–89 · Monarch 90+.
-- `quest_events` is append-only; current values are folded from events, so multi-device sync stays conflict-free later.
+`GET|POST /api/cron/daily-reset` with `Authorization: Bearer $CRON_SECRET`, at 06:00 IST = `30 0 * * *` UTC.
+`vercel.json` has the Vercel cron. On Render, add a Cron Job:
 
-## Not in Phase 1
+```bash
+curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/daily-reset"
+```
 
-Auth (hunters are chosen by `?h=slug`), Telegram, voice, cron jobs, replan/review modes, photo/GPS proof, extra charts,
-offline mode, partner credits. See the spec doc for Phases 2–3.
+Without a cron the planner still runs: the first time a user opens the board on a new day, it runs in the
+background and the board fills in a few seconds later. For a live demo set `DEMO_DAY_MINUTES=15`.
+
+## Deploy
+
+Any Node host: `npm install && npm run build && npm start` with the env vars from `.env.example`.
+Use a real Postgres (`DATABASE_URL`) on Vercel/serverless — PGlite needs a persistent disk.
+
+## Game rules (`lib/game.ts`, tested in `tests/game.test.ts`)
+
+- Day runs 06:00 → 06:00 IST; `dayKey` = IST date of (now − 6 h). `DEMO_DAY_MINUTES` shortens the day, same code path.
+- EXP: tick/entry full on completion; counters `exp × min(value/target, 1)`; entries need 30+ words.
+- Clear rate = average credit across the day's quests; cleared at ≥ the user's threshold (default 70%).
+- Streak = consecutive cleared days; a failed Death Quest resets it; best streak is kept.
+- Level = `floor(sqrt(totalExp / 50)) + 1`. Ranks: E 1–4, D 5–9, C 10–19, B 20–34, A 35–49, S 50–74, Monarch 75+.
+
+```bash
+npm test && npm run typecheck && npm run lint && npm run build
+PGLITE_DIR=memory:// npx tsx scripts/backend-e2e.ts      # whole backend flow, in-memory DB
+BASE=http://localhost:3000 npx tsx scripts/smoke.ts       # whole flow over HTTP against a running app
+```

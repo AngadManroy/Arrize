@@ -1,7 +1,9 @@
-import { err, isAdmin, json } from "@/lib/http";
-import { seedAll } from "@/lib/seed";
+import { err, json, isAdmin } from "@/lib/http";
+import { ensureDemoUser } from "@/lib/seed";
+
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
-  if (!isAdmin(req)) return err("Admin key required", 401);
-  return json(await seedAll());
+  if (!isAdmin(req)) return err("Wrong admin password", 401);
+  return json({ demo_user_id: await ensureDemoUser({ reset: true }) });
 }

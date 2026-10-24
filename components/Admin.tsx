@@ -1,101 +1,235 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { api, rupees } from "./client";
+import { api } from "./api";
+
+const KEY = "arrize.admin";
+const ts = (s: string | null) => (s ? new Date(s).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—");
 
 export default function Admin() {
-  const [key, setKey] = useState("");
-  const [tab, setTab] = useState<"pending" | "approved" | "rejected">("pending");
-  const [approvals, setApprovals] = useState<any[]>([]);
-  const [runs, setRuns] = useState<any>(null);
+  const [pw, setPw] = useState("");
+  const [authed, setAuthed] = useState<string | null>(null);
+  const [d, setD] = useState<any>(null);
   const [err, setErr] = useState("");
-  const [busy, setBusy] = useState<number | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState("");
+  const [agents, setAgents] = useState<any>(null);
 
-  useEffect(() => { try { setKey(localStorage.getItem("arise.admin") ?? ""); } catch { /* ignore */ } }, []);
-
-  const load = useCallback(async () => {
+  const load = useCallback(async (key: string) => {
     try {
-      const [a, r] = await Promise.all([api(`/api/admin/approvals?status=${tab}`, { admin: key }), api("/api/admin/runs", { admin: key })]);
-      setApprovals(a.approvals); setRuns(r); setErr("");
-    } catch (e: any) { setErr(e.message); }
-  }, [key, tab]);
-  useEffect(() => { load(); const t = setInterval(load, 6000); return () => clearInterval(t); }, [load]);
+      setD(await api("/api/admin/overview", { admin: key }));
+      setAuthed(key);
+      try { sessionStorage.setItem(KEY, key); } catch { /* ignore */ }
+      setErr("");
+    } catch (e: any) {
+      setErr(e.message);
+      setAuthed(null);
+    }
+  }, []);
 
-  async function decide(id: number, decision: "approve" | "reject") {
-    const reason = decision === "reject" ? prompt("Reason (sent to the hunter):") ?? "" : undefined;
-    setBusy(id);
-    try { await api("/api/admin/approvals", { admin: key, body: { id, decision, reason, by: "guild-master" } }); await load(); }
-    catch (e: any) { alert(e.message); } finally { setBusy(null); }
+  useEffect(() => {
+    let saved: string | null = null;
+    try { saved = sessionStorage.getItem(KEY); } catch { /* ignore */ }
+    if (saved) load(saved);
+  }, [load]);
+
+  async function run(label: string, fn: () => Promise<any>) {
+    setBusy(label);
+    setMsg("");
+    try {
+      const r = await fn();
+      setMsg(`${label}: ${typeof r === "string" ? r : JSON.stringify(r).slice(0, 400)}`);
+      await load(authed!);
+    } catch (e: any) {
+      setMsg(`${label} failed: ${e.message}`);
+    } finally {
+      setBusy(null);
+    }
   }
 
+  async function download(what: string, format: string) {
+    const res = await fetch(`/api/admin/export?what=${what}&format=${format}`, { headers: { "x-admin-key": authed! } });
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `arrize-${what}.${format}`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  if (!authed) {
+    return (
+      <div className="gate">
+        <form className="gate-box" onSubmit={(e) => { e.preventDefault(); load(pw); }}>
+          <p className="gate-h">ARRIZE · ADMIN</p>
+          <h1 className="gate-s">Guild console. Enter the admin password.</h1>
+          <input className="pin" type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="admin password" autoFocus />
+          <button className="btn">Enter</button>
+          <p className="err">{err}</p>
+        </form>
+      </div>
+    );
+  }
+  if (!d) return <main className="app wide"><div className="loading-line"><span className="spinner" />LOADING…</div></main>;
+
+  const t = d.totals;
   return (
-    <main className="wrap wide">
-      <div className="row between wrapflex">
-        <div><p className="sys-title">Guild Master console</p><h1>Approvals</h1></div>
-        <div className="row">
-          <input type="password" placeholder="Admin key" value={key} style={{ width: 180 }} onChange={(e) => { setKey(e.target.value); try { localStorage.setItem("arise.admin", e.target.value); } catch { /* ignore */ } }} />
-          <a className="btn sm" href={`/api/admin/proof-export?key=${encodeURIComponent(key)}`}>Proof CSV</a>
-          <button className="btn sm ghost" onClick={async () => { try { await api("/api/admin/seed", { admin: key, body: {} }); alert("Seeded demo, scattered, fresh"); } catch (e: any) { alert(e.message); } }}>Seed demo</button>
+    <main className="app wide">
+      <section className="win appear">
+        <div className="qhead">
+          <p className="win-t">Admin · proof pack</p>
+          <span className="timer">AGENTS <b style={{ color: "var(--mana)" }}>{d.config.agents}</b> · LLM <b style={{ color: "var(--mana)" }}>{d.config.llm}</b> · DB <b style={{ color: "var(--mana)" }}>{d.config.db}</b> · DAY <b style={{ color: "var(--mana)" }}>{d.config.day}</b>{d.config.demoMinutes ? ` · DEMO ${d.config.demoMinutes}M` : ""}</span>
         </div>
+        <div className="kpis">
+          <div className="kpi"><b>{t.users}</b><span>Users</span></div>
+          <div className="kpi"><b>{t.onboarded}</b><span>Onboarded</span></div>
+          <div className="kpi"><b>{t.quests_completed}</b><span>Quests done</span></div>
+          <div className="kpi"><b>{t.agent_runs}</b><span>Agent runs</span></div>
+          <div className="kpi"><b style={{ color: t.fallbacks ? "var(--danger)" : undefined }}>{t.fallbacks}</b><span>Fallbacks</span></div>
+          <div className="kpi"><b>{t.chat_messages}</b><span>Chat msgs</span></div>
+          <div className="kpi"><b>{t.events}</b><span>Events</span></div>
+          <div className="kpi"><b>{d.dau[0]?.n ?? 0}</b><span>DAU today</span></div>
+        </div>
+        <div className="row wrapflex" style={{ marginTop: 14 }}>
+          {["events", "chats", "runs"].map((w) => (
+            <span key={w} className="row" style={{ gap: 4 }}>
+              <button className="tiny" onClick={() => download(w, "json")}>{w} JSON</button>
+              <button className="tiny" onClick={() => download(w, "csv")}>{w} CSV</button>
+            </span>
+          ))}
+          <button className="tiny" disabled={!!busy} onClick={() => run("Seed demo", () => api("/api/admin/seed", { body: {}, admin: authed }))}>Reset demo hunter</button>
+          <button className="tiny" disabled={!!busy} onClick={async () => { setAgents("…"); setAgents(await api("/api/admin/agents", { admin: authed })); }}>Check AgenticOrg</button>
+          <button className="tiny" onClick={() => load(authed)}>Refresh</button>
+        </div>
+        {busy && <div className="loading-line"><span className="spinner" />{busy.toUpperCase()}…</div>}
+        {msg && <p className="note" style={{ wordBreak: "break-word" }}>{msg}</p>}
+        {agents && <pre className="note" style={{ whiteSpace: "pre-wrap", maxHeight: 220, overflow: "auto" }}>{typeof agents === "string" ? agents : JSON.stringify(agents, null, 2)}</pre>}
+      </section>
+
+      <div className="grid2 mt">
+        <section className="win appear">
+          <p className="win-t">Signups by day</p>
+          <Bars rows={[...d.signups].reverse()} />
+        </section>
+        <section className="win appear">
+          <p className="win-t">Daily active users</p>
+          <Bars rows={[...d.dau].reverse()} />
+        </section>
       </div>
-      {err && <div className="banner bad" style={{ marginTop: 12 }}>{err}</div>}
-      {runs && (
-        <p className="small muted">Architect: {runs.providers.length ? runs.providers.join(" → ") + " → offline" : "offline rules only (set AGENTICORG_* or ANTHROPIC_API_KEY)"} · Payments: {runs.payments === "mock" ? "mock checkout" : "Pine Labs"} · {runs.users} hunters</p>
-      )}
 
-      <div className="row" style={{ margin: "12px 0" }}>
-        {(["pending", "approved", "rejected"] as const).map((t) => <button key={t} className={`btn sm ${tab === t ? "" : "ghost"}`} onClick={() => setTab(t)}>{t}</button>)}
-      </div>
+      <section className="win appear mt">
+        <p className="win-t">Users · run planner</p>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead><tr><th>#</th><th>Hunter</th><th>Email</th><th>Goal</th><th>Onboarded</th><th>Last seen</th><th>Planner</th></tr></thead>
+            <tbody>
+              {d.users.map((u: any) => (
+                <tr key={u.id}>
+                  <td>{u.id}</td><td>{u.hunter_name}</td><td className="muted">{u.email}</td><td>{u.goal ?? "—"}</td><td>{u.onboarded_at ? "✓" : "—"}</td><td className="muted">{ts(u.last_seen)}</td>
+                  <td>
+                    {u.onboarded_at && (
+                      <span className="row" style={{ gap: 4 }}>
+                        <button className="tiny" disabled={!!busy} onClick={() => run(`Replan today for ${u.hunter_name}`, () => api("/api/admin/run-planner", { body: { user_id: u.id, day: "today" }, admin: authed }))}>Replan today</button>
+                        <button className="tiny" disabled={!!busy} onClick={() => run(`Plan tomorrow for ${u.hunter_name}`, () => api("/api/admin/run-planner", { body: { user_id: u.id, day: "tomorrow" }, admin: authed }))}>Plan tomorrow</button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-      {approvals.length === 0 && <p className="muted">Nothing {tab}.</p>}
-      {approvals.map((a) => {
-        const s = a.summary;
-        return (
-          <section key={a.id} className="panel" style={{ marginTop: 12 }}>
-            <div className="row between wrapflex">
-              <div className="row"><span className={`tag ${a.kind === "contract" ? "violet" : "warn"}`}>{a.kind === "contract" ? "Contract" : "Settlement"}</span><b>{s.task}</b></div>
-              <span className="small muted">#{a.id} · {s.hunter} ({a.slug}) · {new Date(a.created_at).toLocaleTimeString("en-IN")}</span>
-            </div>
-            {a.kind === "contract" ? (
-              <div className="small" style={{ marginTop: 8 }}>
-                <div>Stake <b className="mono">{rupees(s.stake_paise)}</b> · due {new Date(s.deadline).toLocaleString("en-IN")} · checks: {s.verify_methods.join(", ")}</div>
-                <ul style={{ margin: "6px 0", paddingLeft: 18 }}>{s.acceptance_criteria.map((c: string) => <li key={c}>{c}</li>)}</ul>
-                {s.risk_flags?.length > 0 && <div className="banner warn">Risk flags: {s.risk_flags.join(", ")}</div>}
-                <div className="muted">Agent note: {s.reviewer_note} <span className="tag">{s.agent_provider}</span></div>
-              </div>
-            ) : (
-              <div className="small" style={{ marginTop: 8 }}>
-                <div>Verdict <span className={`tag ${s.verdict === "pass" ? "good" : s.verdict === "fail" ? "bad" : "warn"}`}>{s.verdict}</span> · confidence {Math.round(s.confidence * 100)}% · action if approved: <b>{s.settlement === "refund" ? `refund ${rupees(s.stake_paise)}` : s.settlement === "forfeit" ? `forfeit ${rupees(s.stake_paise)} to charity` : "ask for more proof"}</b></div>
-                <table style={{ marginTop: 6 }}><tbody>{s.signals.map((x: any) => <tr key={x.name}><td>{x.name}</td><td><span className={`tag ${x.result === "pass" ? "good" : x.result === "fail" ? "bad" : ""}`}>{x.result}</span></td><td className="muted">{x.detail}</td></tr>)}</tbody></table>
-                <ul className="muted" style={{ margin: "6px 0", paddingLeft: 18 }}>{s.reasons.map((r: string, i: number) => <li key={i}>{r}</li>)}</ul>
-                <div className="muted">You see signals only, never the hunter's photos or media. <span className="tag">{s.agent_provider}</span></div>
-              </div>
-            )}
-            {a.status === "pending" ? (
-              <div className="row" style={{ marginTop: 10 }}>
-                <button className="btn good sm" disabled={busy === a.id} onClick={() => decide(a.id, "approve")}>Approve</button>
-                <button className="btn danger sm" disabled={busy === a.id} onClick={() => decide(a.id, "reject")}>{a.kind === "contract" ? "Reject" : "Reject · ask for more proof"}</button>
-              </div>
-            ) : <p className="small muted">{a.status} by {a.decided_by} {a.reason ? `· ${a.reason}` : ""}</p>}
-          </section>
-        );
-      })}
+      <section className="win appear mt">
+        <p className="win-t">Agent runs (fallbacks in red)</p>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead><tr><th>#</th><th>When</th><th>Hunter</th><th>Agent</th><th>Provider</th><th>Model</th><th>Status</th><th>Conf.</th><th>ms</th><th>Notes</th></tr></thead>
+            <tbody>
+              {d.runs.map((r: any) => (
+                <tr key={r.id} className={r.fell_back || r.status === "failed" ? "bad" : ""}>
+                  <td>{r.id}</td><td className="muted">{ts(r.created_at)}</td><td>{r.hunter_name ?? "—"}</td><td>{r.agent}</td>
+                  <td className={r.fell_back ? "red" : r.provider === "agenticorg" ? "green" : ""}>{r.provider}{r.fell_back ? " (fallback)" : ""}</td>
+                  <td className="muted">{r.model ?? "—"}</td><td>{r.status}</td><td>{r.confidence ?? "—"}</td><td className="muted">{r.latency_ms ?? "—"}</td>
+                  <td className="muted" style={{ maxWidth: 360, wordBreak: "break-word" }}>{r.error ? <span className="red">{r.error.slice(0, 220)}</span> : r.agent === "quest_planner" ? r.output?.diagnosis : r.agent === "goal_intake" ? r.output?.goal : r.output?.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
-      {runs && (
-        <div className="panel" style={{ marginTop: 18 }}>
-          <p className="sys-title">Quest Architect runs</p>
-          <div style={{ overflowX: "auto" }}>
-            <table>
-              <thead><tr><th>#</th><th>Time</th><th>Hunter</th><th>Mode</th><th>Provider</th><th>Status</th><th>ms</th><th>Note</th></tr></thead>
-              <tbody>{runs.runs.map((r: any) => (
-                <tr key={r.id}><td>{r.id}</td><td>{new Date(r.created_at).toLocaleTimeString("en-IN")}</td><td>{r.slug}</td><td>{r.mode}</td><td>{r.provider}</td><td>{r.status}</td><td className="mono">{r.latency_ms}</td><td className="muted">{r.error ?? r.external_run_id ?? ""}</td></tr>
-              ))}</tbody>
-            </table>
+      <section className="win appear mt">
+        <p className="win-t">Planner runs</p>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead><tr><th>Day</th><th>Hunter</th><th>Status</th><th>Diagnosis</th><th>Message</th><th>Run</th></tr></thead>
+            <tbody>
+              {d.plans.map((p: any) => (
+                <tr key={`${p.user_id}-${p.day}`} className={p.status === "failed" ? "bad" : ""}>
+                  <td>{p.day}</td><td>{p.hunter_name}</td><td>{p.status}</td><td>{p.diagnosis ?? "—"}</td><td className="muted" style={{ maxWidth: 420 }}>{p.message ?? "—"}</td><td className="muted">{p.agent_run_id ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="win appear mt">
+        <p className="win-t red">Death Quests</p>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead><tr><th>#</th><th>Hunter</th><th>Week</th><th>Title</th><th>Proof</th><th>Deadline</th><th>Status</th><th>Human review</th></tr></thead>
+            <tbody>
+              {d.deathQuests.map((q: any) => (
+                <tr key={q.id}>
+                  <td>{q.id}</td><td>{q.hunter_name}</td><td>{q.week_key}</td><td>{q.title}</td><td>{q.proof_type}</td><td className="muted">{ts(q.deadline)}</td>
+                  <td className={q.status === "failed" ? "red" : q.status === "passed" ? "green" : ""}>{q.status}</td>
+                  <td>
+                    {["pending_agent", "awaiting_human", "submitted", "validating"].includes(q.status) && (
+                      <span className="row" style={{ gap: 4 }}>
+                        <button className="tiny" disabled={!!busy} onClick={() => run(`Pass DQ ${q.id}`, () => api(`/api/admin/death-quests/${q.id}`, { body: { status: "passed" }, admin: authed }))}>Pass</button>
+                        <button className="tiny x" disabled={!!busy} onClick={() => run(`Fail DQ ${q.id}`, () => api(`/api/admin/death-quests/${q.id}`, { body: { status: "failed" }, admin: authed }))}>Fail</button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div className="grid2 mt">
+        <section className="win appear">
+          <p className="win-t">Event kinds</p>
+          <div className="chips">{d.eventKinds.map((e: any) => <span key={e.type} className="chip">{e.type} <b>{e.n}</b></span>)}</div>
+        </section>
+        <section className="win appear">
+          <p className="win-t">Latest events</p>
+          <div style={{ maxHeight: 320, overflow: "auto" }}>
+            {d.recent.map((e: any) => (
+              <div key={e.id} className="note" style={{ marginTop: 4 }}>
+                <span style={{ color: "var(--mana)" }}>{ts(e.created_at)}</span> · {e.hunter_name ?? "system"} · <b>{e.type}</b> <span className="muted">{JSON.stringify(e.payload).slice(0, 120)}</span>
+              </div>
+            ))}
           </div>
-          <p className="sys-title" style={{ marginTop: 14 }}>Event counts</p>
-          <div className="row wrapflex">{runs.counts.map((c: any) => <span key={c.type} className="tag">{c.type}: {c.n}</span>)}</div>
-        </div>
-      )}
+        </section>
+      </div>
     </main>
+  );
+}
+
+function Bars({ rows }: { rows: { day: string; n: number }[] }) {
+  if (!rows.length) return <p className="small muted">No data yet.</p>;
+  const max = Math.max(1, ...rows.map((r) => r.n));
+  return (
+    <>
+      <div className="bars" style={{ marginTop: 18 }}>
+        {rows.map((r) => <div key={r.day} style={{ height: `${(r.n / max) * 100}%` }} title={`${r.day}: ${r.n}`}><span>{r.n}</span></div>)}
+      </div>
+      <div className="row between note" style={{ marginTop: 6 }}><span>{rows[0].day}</span><span>{rows.at(-1)!.day}</span></div>
+    </>
   );
 }
