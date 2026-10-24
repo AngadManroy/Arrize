@@ -47,6 +47,7 @@
       - Goal Intake `7228e54b-28f9-43ca-b486-1c3b0c4e4450`
       - Quest Planner `d1b28ea1-f256-4427-a32d-21baa6d5db1b`
       - Death Quest Options `d2e7cada-3cdf-4e1f-98df-ed854dd46c6e`
+      - Death Quest Validator `5fbc87e6-54ce-41d7-9289-330b7d035529`. Angad's commit b5be809 added it: the server collects evidence in `lib/proof.ts` (SSRF-guarded page fetch, GitHub API), the agent judges it, and `applyGuardrails` sends uncertain cases to a human.
     - Sample runs take ~3 s and come back `hitl_triggered` (shadow) with valid output. Locally all 3 personas and the backend e2e run on `agenticorg` with no fallback.
     - The API key belongs to a different scope than the Mukund dashboard login (AirTribe tenant), so these agents show up in the key owner's dashboard, not Mukund's. `POST /sop/deploy` gets a CloudFront 403, so the script falls back to `POST /agents`.
   - **Arrize Pro:** ₹199/month via UPI QR (`lib/subscription.ts`, `uqr`). The user enters their UTR; an admin approves on `/admin`, which activates 30 days. Needs `UPI_VPA`. There's no gateway, so nothing is auto-verified.
