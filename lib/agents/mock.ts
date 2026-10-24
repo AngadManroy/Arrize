@@ -160,7 +160,9 @@ export function mockPlan(input: PlannerInputT): DailyPlanT {
     scattered: `You've been spread across ${active.length} tracks and ${input.computed.days_logged_7 < 3 ? `only ${input.computed.days_logged_7} days stuck this week` : `cleared just ${pct}% this week`}, so ${paused > 0 ? `I paused ${paused} and ` : ""}today is just 3 quests on ${keep.map((k) => k.name).join(" and ")}. Small and finished beats big and skipped.`,
     coasting: `You cleared ${pct}% of your quests this week, so I raised your targets by about 20%. You're ready for more.`,
     stalled: "You've been repeating the same quests for a while, so today mixes things up with a teach-back and a mini project. New angles make ideas stick.",
-    on_track: `Solid week: ${input.computed.days_logged_7} of 7 days logged at ${pct}% average. Same rhythm today, keep the streak alive.`,
+    on_track: input.last_7_days.length < 3
+      ? "You're just getting started, so today keeps the same shape: a few short quests on your main tracks. Clear 70% to start your streak."
+      : `Solid week: ${input.computed.days_logged_7} of 7 days logged at ${pct}% average. Same rhythm today, keep the streak alive.`,
   };
   return { diagnosis, reasons: reasons[diagnosis], track_changes: changes, quests_for_tomorrow: quests, message_to_user: messages[diagnosis] };
 }
