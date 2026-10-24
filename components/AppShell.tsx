@@ -35,7 +35,13 @@ const TABS = [
   { href: "/coach", label: "Coach", icon: "✦" },
   { href: "/death", label: "Death Quest", short: "Death", icon: "☠", red: true },
   { href: "/status", label: "Stats", icon: "◎" },
+  { href: "/profile", label: "Profile", icon: "☰" },
 ];
+
+export async function signOut() {
+  await fetch("/api/auth/signout", { method: "POST" }).catch(() => undefined);
+  window.location.href = "/";
+}
 
 export function AppShell({ active, name, children }: { active: string; name: string; children: React.ReactNode }) {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -70,18 +76,16 @@ export function AppShell({ active, name, children }: { active: string; name: str
 
   useEffect(() => { refresh().catch(() => undefined); }, [refresh]);
 
-  async function signOut() {
-    await api("/api/auth/signout", { body: {} });
-    window.location.href = "/";
-  }
-
   const pct = stats ? Math.min(100, (stats.intoLevel / Math.max(1, stats.needed)) * 100) : 0;
 
   return (
     <Ctx.Provider value={{ stats, threshold, applyStats, refresh, toast }}>
       <main className="app">
         <header className="win appear">
-          <p className="win-t">Status</p>
+          <div className="row between hdr-top">
+            <p className="win-t grow">Status</p>
+            <button className="tiny x" onClick={signOut}>⏻ Log out</button>
+          </div>
           <div className="hunter">
             <div className="lvl-badge"><div><span>LEVEL</span><b>{stats?.level ?? "–"}</b></div></div>
             <div className="hunter-info">

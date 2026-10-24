@@ -129,6 +129,9 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   padding: calc(18px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(96px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
 }
 .app.wide { max-width: 1180px; }
+.hdr-top { align-items: flex-start; margin-bottom: 14px; }
+.hdr-top .win-t { margin: 0; padding-top: 6px; }
+.hdr-top .tiny { margin-left: 14px; }
 .hunter { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
 .lvl-badge {
   width: 92px; height: 92px; flex: 0 0 92px; display: grid; place-items: center; position: relative; text-align: center;
@@ -300,11 +303,29 @@ label { display: block; font-family: var(--mono); font-size: 10px; letter-spacin
 .composer { display: flex; gap: 8px; margin-top: 14px; }
 .composer .inp { flex: 1; }
 .composer .btn { width: auto; margin: 0; padding: 0 16px; }
+.composer .btn.mic { padding: 0 14px; font-size: 16px; letter-spacing: 0; }
+.composer .btn.mic.live { border-color: var(--danger); color: var(--danger); background: rgba(255, 77, 109, 0.12); animation: micpulse 1.2s ease-in-out infinite; }
+@keyframes micpulse { 50% { box-shadow: 0 0 16px rgba(255, 77, 109, 0.55); } }
 .cursor::after { content: "▍"; animation: blink 1s steps(2) infinite; color: var(--mana); margin-left: 1px; }
 @keyframes blink { to { opacity: 0; } }
 .turns { font-family: var(--mono); font-size: 10px; letter-spacing: 0.2em; color: var(--ink-dim); text-transform: uppercase; }
 .plan-card { border: 1px solid var(--mana); background: rgba(90, 217, 255, 0.06); padding: 14px; margin-top: 6px; }
 .plan-card ul { margin: 8px 0 0; padding-left: 18px; font-size: 13.5px; line-height: 1.7; }
+
+/* ============================================================
+   PROFILE + PAYMENT
+   ============================================================ */
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 9px 18px; align-items: baseline; }
+.kv span { font-family: var(--mono); font-size: 10px; letter-spacing: 0.2em; color: var(--ink-dim); text-transform: uppercase; }
+.kv b { font-weight: 400; font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
+.kv b.gold { color: var(--gold); }
+.pay { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+.qr { flex: 0 0 auto; width: 220px; max-width: 100%; padding: 8px; background: #fff; border: 1px solid var(--gold); box-shadow: 0 0 18px rgba(255, 200, 87, 0.25); }
+.qr svg { display: block; width: 100%; height: auto; }
+.pay .row .inp { flex: 1; min-width: 0; }
+.pay .row .btn.sm { padding: 10px 14px; }
+.upi-open { margin: 0; }
+@media (min-width: 700px) { .upi-open { display: none; } }
 
 /* ============================================================
    STATS

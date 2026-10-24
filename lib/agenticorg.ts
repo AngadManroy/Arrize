@@ -39,6 +39,20 @@ export async function aoRequest<T = any>(method: string, path: string, body?: un
   return data as T;
 }
 
+/** The hackathon host sits behind CloudFront, which drops the Authorization header on GET requests,
+ * so the key is checked with a POST: a run on an unknown agent id answers 404 once the key is accepted. */
+export async function checkKey(): Promise<{ ok: boolean; detail: string }> {
+  try {
+    await aoRequest("POST", "/agents/00000000-0000-0000-0000-000000000000/run", { action: "process", inputs: { task: "Connectivity check from Arrize." } }, 20_000);
+    return { ok: true, detail: "unexpected success on a dummy agent id" };
+  } catch (e: any) {
+    const msg = String(e?.message ?? e);
+    return /HTTP 404/.test(msg) ? { ok: true, detail: "key accepted" } : { ok: false, detail: msg };
+  }
+}
+
+export const AGENT_ID_VARS = ["AGENTICORG_AGENT_GOAL_INTAKE", "AGENTICORG_AGENT_QUEST_PLANNER", "AGENTICORG_AGENT_DEATH_QUEST_OPTIONS"];
+
 export const listAgents = (domain?: string) => aoRequest("GET", `/agents${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`);
 export const getAgent = (id: string) => aoRequest("GET", `/agents/${id}`);
 export const parseSop = (text: string, domainHint = "ops") => aoRequest("POST", "/sop/parse-text", { text, domain_hint: domainHint, llm_model: "" });

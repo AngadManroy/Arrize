@@ -28,9 +28,12 @@ export async function overview() {
   const deathQuests = await q<any>(`
     SELECT d.id, d.user_id, u.hunter_name, d.week_key, d.title, d.proof_type, d.deadline, d.status, d.submitted_at, d.submission, d.verdict
     FROM death_quests d JOIN users u ON u.id = d.user_id ORDER BY d.id DESC LIMIT 50`);
+  const subscriptions = await q<any>(`
+    SELECT s.id, s.user_id, u.hunter_name, u.email, s.amount_inr, s.status, s.upi_ref, s.submitted_at, s.period_end, s.created_at
+    FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE s.status <> 'awaiting_payment' ORDER BY s.id DESC LIMIT 50`);
   const eventKinds = await q<any>(`SELECT type, COUNT(*)::int AS n FROM events GROUP BY type ORDER BY n DESC`);
   const recent = await q<any>(`SELECT e.id, e.user_id, u.hunter_name, e.type, e.payload, e.created_at FROM events e LEFT JOIN users u ON u.id = e.user_id ORDER BY e.id DESC LIMIT 60`);
-  return { totals, signups, dau, users, runs, plans, deathQuests, eventKinds, recent };
+  return { totals, signups, dau, users, runs, plans, deathQuests, subscriptions, eventKinds, recent };
 }
 
 export async function exportEvents() {

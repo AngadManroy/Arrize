@@ -19,7 +19,8 @@ export const AgentQuest = z.object({
   track: z.string().trim().max(80).nullish().transform((v) => v ?? null),
   type: QuestType,
   target: z.coerce.number().positive().max(10_000).nullish().transform((v) => v ?? null),
-  unit: z.string().max(30).nullish().transform((v) => v ?? ""),
+  // Agents sometimes write a phrase as the unit ("minutes of focused practice"); keep the first 30 chars.
+  unit: z.string().nullish().transform((v) => (v ?? "").trim().slice(0, 30).trim()),
   exp: z.coerce.number().int().min(1).max(200),
   attribute: z.string().nullish().transform((v) => {
     const a = String(v ?? "INT").toUpperCase();
@@ -112,6 +113,14 @@ export const DeathQuestOptions = z.object({
   })).min(1).max(5),
 });
 export type DeathQuestOptionsT = z.infer<typeof DeathQuestOptions>;
+
+export interface DeathQuestOptionsInputT {
+  goal: string;
+  deadline: string | null;
+  daily_minutes: number;
+  tracks: string[];
+  current_level: string | null;
+}
 
 export const QuizQuestions = z.object({
   questions: z.array(z.object({ question: z.string().min(5), expected_answer: z.string().min(1) })).min(3).max(5),

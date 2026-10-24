@@ -107,7 +107,10 @@ export async function confirmOnboarding(user: UserRow) {
   const result = await getAgentProvider().goalIntake({ transcript }, { userId: user.id, today: day });
   const p = result.output;
   const learnerTurns = transcript.filter((t) => t.role === "learner").length;
-  if (p.needs_followup && p.followup_questions.length && learnerTurns < MAX_ONBOARDING_TURNS) {
+  // Once the coach has summarised the plan ([[READY]]) and the learner pressed Confirm, a follow-up
+  // would only re-ask for confirmation, so the plan is built from what the agent returned.
+  const coachSaidReady = history.some((m) => m.role === "coach" && m.meta?.ready);
+  if (p.needs_followup && p.followup_questions.length && learnerTurns < MAX_ONBOARDING_TURNS && !coachSaidReady) {
     const text = `Almost there. ${p.followup_questions.slice(0, 2).join(" ")}`;
     await saveMessage(user.id, "onboarding", "coach", text, { followup: true, agent_run_id: result.runId });
     return { status: "followup" as const, message: text };

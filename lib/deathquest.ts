@@ -7,8 +7,8 @@ import { dayInfo } from "./clock";
 import { getAgentProvider } from "./agents";
 import { generateJson, llmEnabled } from "./llm";
 import { mockDeathQuestOptions, mockQuiz } from "./agents/mock";
-import { DEATH_QUEST_OPTIONS_SYSTEM, QUIZ_SYSTEM } from "./agents/prompts";
-import { DeathQuestOptions, QuizQuestions, type DeathQuestOptionsT } from "./agents/schemas";
+import { QUIZ_SYSTEM } from "./agents/prompts";
+import { QuizQuestions, type DeathQuestOptionsT } from "./agents/schemas";
 import { wordCount } from "./game";
 import { activeGoal, goalTracks } from "./planner";
 import type { UserRow } from "./session";
@@ -40,13 +40,14 @@ export async function suggestOptions(user: UserRow): Promise<DeathQuestOptionsT 
   const goal = await activeGoal(user.id);
   const tracks = goal ? (await goalTracks(goal.id)).filter((t) => t.status === "active").map((t) => t.name) : [];
   const fallback = () => ({ ...mockDeathQuestOptions(goal?.title ?? "your goal", tracks), source: "mock" });
-  if (!llmEnabled() || !goal) return fallback();
+  if (!goal) return fallback();
   try {
-    const { data } = await generateJson(DeathQuestOptions, [
-      { role: "system", content: DEATH_QUEST_OPTIONS_SYSTEM },
-      { role: "user", content: JSON.stringify({ goal: goal.title, deadline: goal.deadline, daily_minutes: goal.daily_minutes, tracks, current_level: goal.current_level }) },
-    ]);
-    return { options: data.options.slice(0, 3), source: "llm" };
+    const { day } = await dayInfo();
+    const r = await getAgentProvider().suggestDeathQuests(
+      { goal: goal.title, deadline: goal.deadline ?? null, daily_minutes: goal.daily_minutes, tracks, current_level: goal.current_level ?? null },
+      { userId: user.id, today: day },
+    );
+    return { options: r.output.options.slice(0, 3), source: r.provider };
   } catch {
     return fallback();
   }

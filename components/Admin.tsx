@@ -201,6 +201,34 @@ export default function Admin() {
         </div>
       </section>
 
+      <section className="win appear mt">
+        <p className="win-t">Subscriptions · UPI payments to verify</p>
+        <p className="note" style={{ marginTop: 0 }}>Approve only after the UTR appears on the receiving account&apos;s statement. The UPI note reads ARRIZE-&lt;#&gt;.</p>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead><tr><th>#</th><th>Hunter</th><th>₹</th><th>UTR</th><th>Submitted</th><th>Status</th><th>Active until</th><th>Verify</th></tr></thead>
+            <tbody>
+              {(d.subscriptions ?? []).map((s: any) => (
+                <tr key={s.id}>
+                  <td>{s.id}</td><td>{s.hunter_name} <span className="muted">{s.email}</span></td><td>{s.amount_inr}</td><td className="mono">{s.upi_ref ?? "—"}</td>
+                  <td className="muted">{s.submitted_at ? ts(s.submitted_at) : "—"}</td>
+                  <td className={s.status === "rejected" ? "red" : s.status === "active" ? "green" : ""}>{s.status}</td>
+                  <td className="muted">{s.period_end ? ts(s.period_end) : "—"}</td>
+                  <td>
+                    {s.status === "pending_verification" && (
+                      <span className="row" style={{ gap: 4 }}>
+                        <button className="tiny" disabled={!!busy} onClick={() => run(`Approve payment ${s.id}`, () => api(`/api/admin/subscriptions/${s.id}`, { body: { action: "approve" }, admin: authed }))}>Approve</button>
+                        <button className="tiny x" disabled={!!busy} onClick={() => run(`Reject payment ${s.id}`, () => api(`/api/admin/subscriptions/${s.id}`, { body: { action: "reject" }, admin: authed }))}>Reject</button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <div className="grid2 mt">
         <section className="win appear">
           <p className="win-t">Event kinds</p>

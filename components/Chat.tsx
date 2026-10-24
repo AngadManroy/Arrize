@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { api, streamText } from "./api";
+import { useVoice } from "./useVoice";
 
 type Msg = { id?: number; role: "learner" | "coach"; content: string; meta?: any; streaming?: boolean };
 type Plan = { goal: string; deadline: string; daily_minutes: number; tracks: string[]; quests: { title: string; track: string | null; type: string; target: number | null; unit: string; exp: number }[]; provider: string; fellBack: boolean };
 
 const READY = "[[READY]]";
+const SPEAK_KEY = "arrize_coach_voice";
 
 /** Streaming chat with the coach. mode="onboarding" adds plan confirmation; mode="coach" is the free chat. */
 export default function Chat({ mode, name }: { mode: "onboarding" | "coach"; name: string }) {
@@ -20,6 +22,26 @@ export default function Chat({ mode, name }: { mode: "onboarding" | "coach"; nam
   const [maxTurns, setMaxTurns] = useState(8);
   const end = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [speakReplies, setSpeakReplies] = useState(false);
+  const voice = useVoice({
+    onTranscript: (t) => send(t),
+    onInterim: setInput,
+    onError: setError,
+  });
+  const voiceOn = mode === "coach" && voice.canListen;
+
+  useEffect(() => {
+    try { setSpeakReplies(localStorage.getItem(SPEAK_KEY) === "1"); } catch { /* ignore */ }
+  }, []);
+  function setSpeak(on: boolean) {
+    setSpeakReplies(on);
+    if (!on) voice.stopSpeaking();
+    try { localStorage.setItem(SPEAK_KEY, on ? "1" : "0"); } catch { /* ignore */ }
+  }
+  function talk() {
+    if (voice.state === "idle" && !speakReplies) setSpeak(true);
+    voice.toggleListening();
+  }
 
   useEffect(() => {
     api<{ messages: Msg[]; maxTurns?: number; onboarded?: boolean }>(mode === "onboarding" ? "/api/onboarding" : "/api/coach")
@@ -44,7 +66,9 @@ export default function Chat({ mode, name }: { mode: "onboarding" | "coach"; nam
         setMsgs((m) => [...m.slice(0, -1), { role: "coach", content: sofar.replace(READY, "").trimEnd(), streaming: true }]);
       });
       const ready = full.includes(READY);
-      setMsgs((m) => [...m.slice(0, -1), { role: "coach", content: full.replace(READY, "").trim(), meta: { ready } }]);
+      const reply = full.replace(READY, "").trim();
+      setMsgs((m) => [...m.slice(0, -1), { role: "coach", content: reply, meta: { ready } }]);
+      if (mode === "coach" && speakReplies) voice.speak(reply);
     } catch (e: any) {
       setMsgs((m) => m.slice(0, -1));
       setError(e.message);
@@ -78,9 +102,17 @@ export default function Chat({ mode, name }: { mode: "onboarding" | "coach"; nam
       <div className="qhead">
         <p className="win-t">{mode === "onboarding" ? "Coach · setting your goal" : "Coach"}</p>
         {mode === "onboarding" && !plan && <span className="turns">Answer {Math.min(learnerTurns, maxTurns)} / ~{maxTurns}</span>}
+        {mode === "coach" && (
+          <span className="row" style={{ gap: 6 }}>
+            {voice.speaking && <button className="tiny" onClick={voice.stopSpeaking}>■ Stop</button>}
+            <button className={`tiny ${speakReplies ? "on" : ""}`} onClick={() => { voice.unlock(); setSpeak(!speakReplies); }} aria-pressed={speakReplies} title={`Read replies aloud (${voice.engine} voice)`}>
+              {speakReplies ? "🔊 Voice on" : "🔈 Voice off"}
+            </button>
+          </span>
+        )}
       </div>
       {mode === "coach" && msgs.length === 0 && (
-        <p className="small muted">Ask about your plan, a quest you&apos;re stuck on, or how to recover after a bad day. Your coach sees your goal and the last 7 days.</p>
+        <p className="small muted">Ask about your plan, a quest you&apos;re stuck on, or how to recover after a bad day. Your coach sees your goal and the last 7 days.{voiceOn ? " Tap 🎙 to talk instead of typing." : ""}</p>
       )}
       <div className="chat" aria-live="polite">
         {msgs.map((m, i) => (
@@ -114,7 +146,13 @@ export default function Chat({ mode, name }: { mode: "onboarding" | "coach"; nam
       )}
       {!plan && (
         <form className="composer" onSubmit={(e) => { e.preventDefault(); send(input); }}>
-          <input ref={inputRef} className="inp" value={input} onChange={(e) => setInput(e.target.value)} placeholder={ready ? "Or tell the coach what to change…" : mode === "onboarding" ? "Answer the coach…" : "Ask your coach…"} disabled={busy || confirming} autoFocus maxLength={2000} />
+          {voiceOn && (
+            <button type="button" className={`btn mic ${voice.state !== "idle" ? "live" : ""}`} onClick={talk} disabled={busy || voice.state === "transcribing"}
+              aria-label={voice.state === "listening" ? "Stop and send" : "Talk to the coach"} title={voice.state === "listening" ? "Stop and send" : "Talk to the coach"}>
+              {voice.state === "transcribing" ? <span className="spinner" /> : voice.state === "listening" ? "■" : "🎙"}
+            </button>
+          )}
+          <input ref={inputRef} className="inp" value={input} onChange={(e) => setInput(e.target.value)} placeholder={voice.state === "listening" ? "Listening… pause to send" : voice.state === "transcribing" ? "Transcribing…" : ready ? "Or tell the coach what to change…" : mode === "onboarding" ? "Answer the coach…" : "Ask your coach…"} disabled={busy || confirming || voice.state !== "idle"} autoFocus maxLength={2000} />
           <button className="btn" disabled={busy || confirming || !input.trim()}>Send</button>
         </form>
       )}

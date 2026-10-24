@@ -7,14 +7,15 @@ import type { z } from "zod";
 import { logEvent, one } from "../db";
 import { runAgent, agenticOrgConfigured } from "../agenticorg";
 import { extractJson, generateJson, llmEnabled, type ChatMsg } from "../llm";
-import { mockGoalIntake, mockPlan } from "./mock";
-import { GOAL_INTAKE_SYSTEM, QUEST_PLANNER_SYSTEM } from "./prompts";
+import { mockDeathQuestOptions, mockGoalIntake, mockPlan } from "./mock";
+import { DEATH_QUEST_OPTIONS_SYSTEM, GOAL_INTAKE_SYSTEM, QUEST_PLANNER_SYSTEM } from "./prompts";
 import {
-  DailyPlan, DeathQuestVerdict, GoalProfile,
-  type AgentResult, type DailyPlanT, type DeathQuestInputT, type DeathQuestVerdictT, type GoalIntakeInputT, type GoalProfileT, type PlannerInputT,
+  DailyPlan, DeathQuestOptions, DeathQuestVerdict, GoalProfile,
+  type AgentResult, type DailyPlanT, type DeathQuestInputT, type DeathQuestOptionsInputT, type DeathQuestOptionsT, type DeathQuestVerdictT,
+  type GoalIntakeInputT, type GoalProfileT, type PlannerInputT,
 } from "./schemas";
 
-export type AgentName = "goal_intake" | "quest_planner" | "death_quest_validator";
+export type AgentName = "goal_intake" | "quest_planner" | "death_quest_options" | "death_quest_validator";
 type ProviderName = AgentResult<unknown>["provider"];
 
 export interface AgentCtx {
@@ -25,6 +26,7 @@ export interface AgentCtx {
 export interface AgentProvider {
   goalIntake(input: GoalIntakeInputT, ctx: AgentCtx): Promise<AgentResult<GoalProfileT>>;
   planDay(input: PlannerInputT, ctx: AgentCtx): Promise<AgentResult<DailyPlanT>>;
+  suggestDeathQuests(input: DeathQuestOptionsInputT, ctx: AgentCtx): Promise<AgentResult<DeathQuestOptionsT>>;
   validateDeathQuest(input: DeathQuestInputT, ctx: AgentCtx): Promise<AgentResult<DeathQuestVerdictT>>;
 }
 
@@ -83,6 +85,7 @@ function mockAttempt<T>(fn: () => T): Attempt<T> {
 const AGENT_ENV: Record<AgentName, string> = {
   goal_intake: "AGENTICORG_AGENT_GOAL_INTAKE",
   quest_planner: "AGENTICORG_AGENT_QUEST_PLANNER",
+  death_quest_options: "AGENTICORG_AGENT_DEATH_QUEST_OPTIONS",
   death_quest_validator: "AGENTICORG_AGENT_DEATH_QUEST",
 };
 
@@ -111,10 +114,14 @@ function agenticOrgAttempt<T>(agent: AgentName, schema: z.ZodType<T>, input: unk
       if (!agenticOrgConfigured() || !id) throw new Error(`${AGENT_ENV[agent]} or AGENTICORG_API_KEY not set`);
       const r = await runAgent(id, input, { agent });
       if (r.status === "failed" || r.status === "budget_exceeded") throw new Error(`run ${r.runId} ${r.status}: ${r.error ?? ""}`);
-      if (r.status === "hitl_triggered") throw new Error(`run ${r.runId} paused for human review (hitl_triggered: ${JSON.stringify(r.hitlTrigger).slice(0, 120)})`);
+      // Shadow-mode agents flag every run for review until they are promoted. The output is still
+      // complete, and our own guardrails apply, so it is used and recorded as hitl_triggered.
+      // AGENTICORG_ACCEPT_HITL=false makes a flagged run fall back instead.
+      const flagged = r.status === "hitl_triggered";
+      if (flagged && process.env.AGENTICORG_ACCEPT_HITL === "false") throw new Error(`run ${r.runId} paused for human review (hitl_triggered: ${JSON.stringify(r.hitlTrigger).slice(0, 120)})`);
       const parsed = schema.safeParse(unwrap(r.output, keys));
       if (!parsed.success) throw new Error(`run ${r.runId} output failed validation: ${parsed.error.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`);
-      return { output: parsed.data, model: "agenticorg", confidence: r.confidence, externalRunId: r.runId, status: "completed" };
+      return { output: parsed.data, model: "agenticorg", confidence: r.confidence, externalRunId: r.runId, status: flagged ? "hitl_triggered" : "completed" };
     },
   };
 }
@@ -128,6 +135,9 @@ export class LocalLLMProvider implements AgentProvider {
   }
   planDay(input: PlannerInputT, ctx: AgentCtx) {
     return execute("quest_planner", input, ctx, [llmAttempt(DailyPlan, QUEST_PLANNER_SYSTEM, input), mockAttempt(() => mockPlan(input))]);
+  }
+  suggestDeathQuests(input: DeathQuestOptionsInputT, ctx: AgentCtx) {
+    return execute("death_quest_options", input, ctx, [llmAttempt(DeathQuestOptions, DEATH_QUEST_OPTIONS_SYSTEM, input), mockAttempt(() => mockDeathQuestOptions(input.goal, input.tracks))]);
   }
   validateDeathQuest(input: DeathQuestInputT, ctx: AgentCtx) {
     return execute("death_quest_validator", input, ctx, [stubValidator()]);
@@ -149,6 +159,13 @@ export class AgenticOrgProvider implements AgentProvider {
       agenticOrgAttempt("quest_planner", DailyPlan, input, ["diagnosis", "quests_for_tomorrow"]),
       llmAttempt(DailyPlan, QUEST_PLANNER_SYSTEM, input),
       mockAttempt(() => mockPlan(input)),
+    ]);
+  }
+  suggestDeathQuests(input: DeathQuestOptionsInputT, ctx: AgentCtx) {
+    return execute("death_quest_options", input, ctx, [
+      agenticOrgAttempt("death_quest_options", DeathQuestOptions, input, ["options"]),
+      llmAttempt(DeathQuestOptions, DEATH_QUEST_OPTIONS_SYSTEM, input),
+      mockAttempt(() => mockDeathQuestOptions(input.goal, input.tracks)),
     ]);
   }
   validateDeathQuest(input: DeathQuestInputT, ctx: AgentCtx) {

@@ -159,6 +159,23 @@ CREATE TABLE IF NOT EXISTS death_quests (
   UNIQUE (user_id, week_key)
 );
 
+-- Arrize Pro (₹199/month) paid by UPI QR. The learner submits the UPI transaction ref (UTR);
+-- an admin checks it against the bank statement and activates 30 days.
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id SERIAL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users(id),
+  plan TEXT NOT NULL DEFAULT 'pro_monthly',
+  amount_inr INT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'awaiting_payment' CHECK (status IN ('awaiting_payment','pending_verification','active','rejected')),
+  upi_ref TEXT UNIQUE,
+  period_start TIMESTAMPTZ,
+  period_end TIMESTAMPTZ,
+  submitted_at TIMESTAMPTZ,
+  verified_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS subscriptions_user ON subscriptions(user_id, id);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
