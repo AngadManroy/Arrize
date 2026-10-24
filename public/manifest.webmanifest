@@ -1,0 +1,10 @@
+{
+  "name": "Arise",
+  "short_name": "Arise",
+  "description": "Daily quests from an AI Quest Architect.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#05070d",
+  "theme_color": "#05070d",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

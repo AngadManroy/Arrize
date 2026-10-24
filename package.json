@@ -1,0 +1,35 @@
+{
+  "name": "arise",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Arise: an AI Quest Architect that turns goals into daily quests, with Death Quest stakes settled through Pine Labs.",
+  "scripts": {
+    "dev": "next dev -p ${PORT:-3000}",
+    "build": "next build",
+    "start": "next start -p ${PORT:-3000} -H 0.0.0.0",
+    "test": "tsx --test tests/*.test.ts",
+    "seed": "tsx scripts/seed.ts",
+    "e2e": "tsx scripts/e2e.ts",
+    "agent:setup": "tsx scripts/agenticorg-setup.ts",
+    "agent:evals": "tsx scripts/evals.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "next": "^16.4.3",
+    "pg": "^8.23.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/pg": "^8",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
