@@ -114,10 +114,11 @@ async function main() {
   await step("second death quest this week is refused", async () => {
     try { await call("POST", "/api/death-quests", { title: "Another", description: "Should be refused by the weekly lock.", proof_type: "entry", deadline: new Date(Date.now() + 86_400_000).toISOString() }); throw new Error("was accepted"); } catch (e: any) { if (/already/.test(e.message)) return "refused"; throw e; }
   });
-  await step("quiz + submit → pending_agent", async () => {
+  await step("quiz + submit → validator verdict", async () => {
     const q = await call("POST", `/api/death-quests/${dqId}/quiz`, {});
     const r = await call("POST", `/api/death-quests/${dqId}/submit`, { answers: q.questions.map(() => "A DataFrame is a 2D labelled table; filter with boolean masks; groupby splits, applies and combines.") });
-    return `${q.questions.length} questions → ${r.verdict.status}`;
+    if (!["passed", "failed", "awaiting_human"].includes(r.verdict.status)) throw new Error(`unexpected verdict ${r.verdict.status}`);
+    return `${q.questions.length} questions → ${r.verdict.status}: ${String(r.verdict.reasons?.[0] ?? "").slice(0, 90)}`;
   });
   await step("admin overview", async () => { const r = await call("GET", "/api/admin/overview", undefined, true); return `users=${r.totals.users} runs=${r.totals.agent_runs} fallbacks=${r.totals.fallbacks} events=${r.totals.events}`; });
   await step("export events CSV", async () => { const r: string = await call("GET", "/api/admin/export?what=events&format=csv", undefined, true); return `${r.split("\n").length - 1} rows`; });

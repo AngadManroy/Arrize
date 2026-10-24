@@ -1,7 +1,8 @@
 import { json, readJson, withUser } from "@/lib/http";
 import { submitProof } from "@/lib/deathquest";
 
-export const maxDuration = 60;
+// Evidence fetch + AgenticOrg run + an LLM fallback can exceed a minute.
+export const maxDuration = 120;
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;

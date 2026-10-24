@@ -1,6 +1,7 @@
 // Weekly Death Quest (spec §12): one per user per ISO week (IST). Locked once created.
 // active → submitted → validating → passed | failed | awaiting_human | pending_agent
-// The validator agent is specified later; until then validateDeathQuest() returns pending_agent.
+// Validation: the server collects evidence (lib/proof.ts), the validator agent judges it, and
+// applyGuardrails() has the last word (quiz pass rule, low confidence or unverifiable proof → a human).
 // The pledge columns exist for the later Pine Labs phase; nothing here moves money.
 import { logEvent, one, q } from "./db";
 import { dayInfo } from "./clock";
@@ -8,7 +9,8 @@ import { getAgentProvider } from "./agents";
 import { generateJson, llmEnabled } from "./llm";
 import { mockDeathQuestOptions, mockQuiz } from "./agents/mock";
 import { QUIZ_SYSTEM } from "./agents/prompts";
-import { QuizQuestions, type DeathQuestOptionsT } from "./agents/schemas";
+import { QuizQuestions, type DeathQuestOptionsT, type DeathQuestVerdictT } from "./agents/schemas";
+import { collectEvidence } from "./proof";
 import { wordCount } from "./game";
 import { activeGoal, goalTracks } from "./planner";
 import type { UserRow } from "./session";
@@ -133,17 +135,40 @@ export async function submitProof(user: UserRow, id: number, body: any) {
   await logEvent(user.id, "death_quest_submitted", { death_quest_id: id, proof_type: dq.proof_type });
   await q(`UPDATE death_quests SET status = 'validating', updated_at = now() WHERE id = $1`, [id]);
   const { day } = await dayInfo();
+  const evidence = await collectEvidence(dq.proof_type, submission);
   const result = await getAgentProvider().validateDeathQuest(
     {
-      quest: { title: dq.title, description: dq.description, proof_type: dq.proof_type, deadline: new Date(dq.deadline).toISOString() },
+      quest: { title: dq.title, description: dq.description, proof_type: dq.proof_type, deadline: new Date(dq.deadline).toISOString(), created_at: new Date(dq.created_at).toISOString() },
       submission,
+      evidence,
       pledge: dq.pledge_amount_inr ? { amount_inr: dq.pledge_amount_inr, charity: dq.charity ?? "" } : null,
       user_disputed: !!dq.user_disputed,
     },
     { userId: user.id, today: day },
   );
-  await settle(id, result.output.status, { ...result.output, provider: result.provider }, result.runId);
-  return result.output;
+  const verdict = applyGuardrails(dq.proof_type, result.output, evidence, !!dq.user_disputed);
+  await settle(id, verdict.status, { ...verdict, provider: result.provider }, result.runId);
+  return verdict;
+}
+
+const MIN_CONFIDENCE = 0.6;
+const QUIZ_PASS = 2;
+
+/** Code overrides the agent where a rule is objective, and sends anything uncertain to a person. */
+export function applyGuardrails(proofType: string, v: DeathQuestVerdictT, evidence: Record<string, any>, disputed: boolean): DeathQuestVerdictT {
+  const toHuman = (why: string): DeathQuestVerdictT => ({ ...v, status: "awaiting_human", reasons: [...v.reasons, why].slice(0, 6) });
+  if (disputed) return toHuman("You disputed this, so a person will review it.");
+  if (v.status === "pending_agent") return toHuman("A reviewer will check it by hand.");
+  if (v.status === "awaiting_human") return v;
+  if (proofType === "quiz" && v.question_results?.length) {
+    const correct = v.question_results.filter((r) => r.correct).length;
+    const status = correct >= QUIZ_PASS ? "passed" : "failed";
+    if (status !== v.status) v = { ...v, status, reasons: [`${correct} of ${v.question_results.length} answers were correct; ${QUIZ_PASS} are needed to pass.`, ...v.reasons].slice(0, 6) };
+  }
+  if (v.confidence !== null && v.confidence < MIN_CONFIDENCE) return toHuman("The validator wasn't sure, so a person will make the final call.");
+  const unverifiable = (proofType === "url" && !evidence.page?.reachable) || (proofType === "commit" && !(evidence.github?.found ?? evidence.page?.reachable));
+  if (v.status === "passed" && unverifiable) return toHuman("We couldn't open your link to confirm it, so a person will check it.");
+  return v;
 }
 
 /** Apply a verdict. A failed Death Quest breaks the current streak (best streak is kept). */

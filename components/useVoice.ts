@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Voice for the coach chat.
-// Listening: ElevenLabs speech-to-text when the server has a key (record → upload), else the
-// browser's SpeechRecognition (Chrome, Edge, Safari). Recording stops on a pause.
-// Speaking: ElevenLabs text-to-speech, else the browser's speechSynthesis.
+//   Listening: ElevenLabs speech-to-text when the server has a key (record → upload), else the
+//              browser's SpeechRecognition (Chrome, Edge, Safari). Recording stops on a pause.
+//   Speaking:  ElevenLabs text-to-speech, else the browser's speechSynthesis.
 
 export type VoiceState = "idle" | "listening" | "transcribing";
 
@@ -184,7 +184,9 @@ export function useVoice({ onTranscript, onInterim, onError }: { onTranscript: (
       cb.current.onInterim?.((final + interim).trim());
     };
     r.onerror = (e: any) => {
-      if (e.error === "not-allowed") cb.current.onError("Microphone permission was denied.");
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") cb.current.onError("Microphone permission was denied.");
+      else if (e.error === "network") cb.current.onError("This browser can't reach its speech service (Brave, Arc and in-editor browsers block it). Use Chrome or Safari, or set ELEVENLABS_API_KEY on the server.");
+      else if (e.error === "audio-capture") cb.current.onError("No microphone found.");
       else if (e.error !== "no-speech" && e.error !== "aborted") cb.current.onError(`Voice input failed: ${e.error}`);
     };
     r.onend = () => {

@@ -1,4 +1,4 @@
-// Human settlement for a Death Quest waiting on the (not yet connected) validator.
+// Human settlement for a Death Quest the validator sent to review (awaiting_human), or any unsettled one.
 import { err, json, isAdmin, readJson } from "@/lib/http";
 import { settle } from "@/lib/deathquest";
 

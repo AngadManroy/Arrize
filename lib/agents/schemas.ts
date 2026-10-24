@@ -91,17 +91,23 @@ export const DailyPlan = z.object({
 export type DailyPlanT = z.infer<typeof DailyPlan>;
 
 export const DeathQuestInput = z.object({
-  quest: z.object({ title: z.string(), description: z.string(), proof_type: z.string(), deadline: z.string() }),
+  quest: z.object({ title: z.string(), description: z.string(), proof_type: z.string(), deadline: z.string(), created_at: z.string().optional() }),
   submission: z.record(z.string(), z.unknown()),
+  /** What the server found by checking the proof itself (page fetch, GitHub lookup, quiz key). */
+  evidence: z.record(z.string(), z.unknown()).nullish(),
   pledge: z.object({ amount_inr: z.number(), charity: z.string() }).nullable(),
   user_disputed: z.boolean(),
 });
 export type DeathQuestInputT = z.infer<typeof DeathQuestInput>;
 
+const VERDICT_ALIASES: Record<string, string> = { pass: "passed", fail: "failed", human: "awaiting_human", review: "awaiting_human", needs_review: "awaiting_human" };
 export const DeathQuestVerdict = z.object({
-  status: z.enum(["passed", "failed", "awaiting_human", "pending_agent"]),
-  confidence: z.number().min(0).max(1).nullable(),
-  reasons: z.array(z.string()),
+  status: z.preprocess((v) => { const k = String(v ?? "").toLowerCase().trim().replace(/[\s-]+/g, "_"); return VERDICT_ALIASES[k] ?? k; },
+    z.enum(["passed", "failed", "awaiting_human", "pending_agent"])),
+  confidence: z.coerce.number().min(0).max(1).nullable(),
+  reasons: z.array(z.string().trim().min(1)).min(1).max(6),
+  /** Quiz only: one verdict per question, in order. */
+  question_results: z.array(z.object({ correct: z.coerce.boolean(), note: z.string().nullish() })).nullish(),
 });
 export type DeathQuestVerdictT = z.infer<typeof DeathQuestVerdict>;
 
