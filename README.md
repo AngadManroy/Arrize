@@ -66,7 +66,18 @@ curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/dai
 Without a cron the planner still runs: the first time a user opens the board on a new day, it runs in the
 background and the board fills in a few seconds later. For a live demo set `DEMO_DAY_MINUTES=15`.
 
-## Deploy
+## Deploy on Replit
+
+1. Replit → **Create** → **Import from GitHub** → this repo (`.replit` is included: Node 22, build `npm ci && npm run build`, run `npm run start`).
+2. **Tools → Database** → create a PostgreSQL database. Replit sets `DATABASE_URL` for you (required: the embedded PGlite is not persistent on Autoscale).
+3. **Tools → Secrets**: add `SESSION_SECRET`, `ADMIN_PASSWORD`, `CRON_SECRET`, `OPENROUTER_API_KEY`, `LLM_PROVIDER`, `LLM_MODEL`,
+   `LLM_FALLBACK_MODELS`, `AGENT_PROVIDER` (and the `AGENTICORG_*` values once the key works), and `APP_URL` = your `https://….replit.app` URL.
+4. **Deploy → Autoscale** (or Reserved VM). Open the URL, then `/admin` → **Reset demo hunter** to seed the demo user.
+5. Daily reset: the planner also runs when a user first opens the board each day. For a real 06:00 IST cron, add a Replit
+   **Scheduled Deployment** at `30 0 * * *` (UTC) running:
+   `curl -fsS -X POST -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/daily-reset"`
+
+## Deploy elsewhere
 
 Any Node host: `npm install && npm run build && npm start` with the env vars from `.env.example`.
 Use a real Postgres (`DATABASE_URL`) on Vercel/serverless — PGlite needs a persistent disk.
