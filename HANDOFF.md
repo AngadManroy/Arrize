@@ -26,17 +26,27 @@
 - **Dropped at the user's request:** Telegram (UI only). Pine Labs payments are out of scope for now; `lib/pinelabs.ts` is kept, unused.
 
 ## Deploy status: LIVE
-- **Live URL:** https://arrize.replit.app (Replit Autoscale, Replit Postgres, `anthropic/claude-haiku-5.5`). Published 2026-10-24.
-- **Code:** GitHub `git@github.com:AngadManroy/Arrize.git` `main`. Replit project `replit.com/@mukundtandon12/Arrize` was imported from it.
-  - Replit auto-started its agent, which tried to convert the repo to a pnpm workspace and crashed the app. It was told to restore the original layout, and did.
-  - To redeploy: push to GitHub, pull in Replit's Git pane, then Publish again.
-- **Secrets on Replit** (added by the user): `SESSION_SECRET`, `ADMIN_PASSWORD`, `CRON_SECRET`, `OPENROUTER_API_KEY`, `LLM_*`, `AGENT_PROVIDER=local`. `DATABASE_URL` is Replit-managed.
-  - TODO: add `APP_URL=https://arrize.replit.app`.
-- **Verified on production:** `BASE=https://arrize.replit.app npx tsx scripts/smoke.ts` passes all 24 steps. It leaves a "Smoke Tester" user and the demo hunter in the database. The cron endpoint works with the Bearer secret.
-- **Still open:**
-  - A Replit Scheduled Deployment for the 06:00 IST cron (command in the README); the planner also runs on demand when a user opens the board.
-  - The AgenticOrg key returns 401.
-  - The Death Quest validator spec (from the user).
+- **Live URL:** https://arrize.replit.app (Replit Autoscale, Replit Postgres, `anthropic/claude-haiku-5.5`).
+- **Rollback point:** git tag `live-2026-10-24` (commit `dfd3800`) is the first live version. To roll back, check out the tag in the Replit shell and republish.
+- **How to redeploy:** push to GitHub `AngadManroy/Arrize` `main`. The repo is public and Replit is *not* linked to GitHub, so in the Replit **Shell** run `git pull --no-rebase --no-edit https://github.com/AngadManroy/Arrize.git main && npm install`, then press **Republish**. Replit's own commits only touch `.replit` (its run workflows) and `AGENTS.md`; keep them.
+  - A publish once stalled ("Publishing stopped without reporting an outcome"). Republishing fixed it. The old version stays live until a publish succeeds.
+- **Verified on production (2026-10-24 ~17:30 IST):** smoke test 24/24; the personas get coasting / scattered (3 quests) / stalled.
+- **Secrets on Replit:** `SESSION_SECRET`, `ADMIN_PASSWORD`, `CRON_SECRET`, `OPENROUTER_API_KEY`, `LLM_*`, `AGENT_PROVIDER=local`; `DATABASE_URL` is Replit-managed. Not set yet: `APP_URL`, `UPI_VPA` (Pro upgrade stays hidden until set), `ELEVENLABS_*` (optional; browser voice otherwise), `AGENTICORG_*`.
+
+## Added after the first deploy
+- **Personas** (`lib/seed.ts`; `/admin` → Reset demo hunter seeds all three; sign in by email, no password):
+  - `demo@arrize.app`: Riya, coasting
+  - `procrastinator@arrize.app`: Kabir, scattered → 1 track paused, 2–3 quests
+  - `stalled@arrize.app`: Meera, stalled → new quest types
+  - Checked by `scripts/personas-check.ts`.
+- **Planner:** a scattered diagnosis gives 2–3 quests; brand-new learners get a 3-day grace period before they can be judged scattered.
+- **Teammate patch** (applied by hand, because the paste lost indentation and CSS property names):
+  - **AgenticOrg:** the key works. The hackathon host's CloudFront drops `Authorization` on GET, so `checkKey()` uses POST. There's now a 3rd agent, `death_quest_options`. Shadow agents' flagged runs are used and recorded as `hitl_triggered` (`AGENTICORG_ACCEPT_HITL=false` falls back instead).
+    - Next step: `npm run agents:create` (needs the user's OK), put the IDs in Replit Secrets, set `AGENT_PROVIDER=agenticorg`.
+  - **Arrize Pro:** ₹199/month via UPI QR (`lib/subscription.ts`, `uqr`). The user enters their UTR; an admin approves on `/admin`, which activates 30 days. Needs `UPI_VPA`. There's no gateway, so nothing is auto-verified.
+  - **Voice coach:** ElevenLabs STT/TTS if a key is set; otherwise the browser's own speech (`components/useVoice.ts`).
+  - **Profile page** `/profile` (plan, UPI checkout, log out), plus a log-out button in the status header.
+  - **Onboarding:** no follow-up question after the learner confirms a READY plan.
 
 ## Environment (`.env.local`, gitignored; never commit secrets)
 - **LLM:** OpenRouter with paid credits.
